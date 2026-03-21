@@ -1,0 +1,5 @@
+Lets make a web app with a UI that displays the current price of Bitcoin. 
+- use a few different free and open-source bitcoin price trackers
+- make it look cool like the matrix
+- use Rust
+- use a container
