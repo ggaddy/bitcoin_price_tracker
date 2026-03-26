@@ -3,22 +3,76 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
 };
 use reqwest::Client;
-use serde::Serialize;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::info;
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tokio::{sync::Mutex, task};
+use tracing::{info, warn};
+
+const REFRESH_INTERVAL_SECONDS: i64 = 10;
+const VIEWER_TTL_SECONDS: i64 = 15;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpstreamSource {
+    CoinGecko,
+    Coinbase,
+    Kraken,
+}
+
+impl UpstreamSource {
+    const ALL: [Self; 3] = [Self::CoinGecko, Self::Coinbase, Self::Kraken];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::CoinGecko => "CoinGecko",
+            Self::Coinbase => "Coinbase",
+            Self::Kraken => "Kraken",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "CoinGecko" => Some(Self::CoinGecko),
+            "Coinbase" => Some(Self::Coinbase),
+            "Kraken" => Some(Self::Kraken),
+            _ => None,
+        }
+    }
+
+    fn next_source(last_refreshed_source: Option<&str>) -> Self {
+        let Some(last_source) = last_refreshed_source.and_then(Self::from_name) else {
+            return Self::ALL[0];
+        };
+
+        let Some(index) = Self::ALL.iter().position(|source| *source == last_source) else {
+            return Self::ALL[0];
+        };
+
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
     client: Client,
+    db_path: PathBuf,
+    viewers: Arc<Mutex<HashMap<String, i64>>>,
+    refresh_lock: Arc<Mutex<()>>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct SourcePrice {
-    source: &'static str,
+    source: String,
     price_usd: f64,
 }
 
@@ -29,8 +83,34 @@ struct PriceResponse {
     sources: Vec<SourcePrice>,
     average_price: Option<f64>,
     spread: Option<f64>,
-    fetched_at_unix: u64,
+    fetched_at_unix: i64,
+    fetched_age_seconds: Option<i64>,
     warnings: Vec<String>,
+    refresh_succeeded: bool,
+    stale: bool,
+    active_viewers: usize,
+    refresh_skipped_reason: Option<String>,
+}
+
+#[derive(Clone)]
+struct SnapshotRecord {
+    fetched_at_unix: i64,
+    sources: Vec<SourcePrice>,
+    average_price: Option<f64>,
+    spread: Option<f64>,
+    warnings: Vec<String>,
+    refreshed_source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PresencePayload {
+    session_id: String,
+    active: bool,
+}
+
+#[derive(Serialize)]
+struct PresenceResponse {
+    active_viewers: usize,
 }
 
 #[tokio::main]
@@ -46,11 +126,23 @@ async fn main() {
         .user_agent("bitcoin-price-tracker/0.1")
         .build()
         .expect("failed to build HTTP client");
-    let state = AppState { client };
+
+    let db_path = database_path();
+    init_db(db_path.clone())
+        .await
+        .expect("failed to initialize SQLite database");
+
+    let state = AppState {
+        client,
+        db_path,
+        viewers: Arc::new(Mutex::new(HashMap::new())),
+        refresh_lock: Arc::new(Mutex::new(())),
+    };
 
     let app = Router::new()
         .route("/", get(index))
         .route("/api/price", get(btc_prices))
+        .route("/api/presence", post(update_presence))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -67,57 +159,135 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+async fn update_presence(
+    State(state): State<AppState>,
+    Json(payload): Json<PresencePayload>,
+) -> impl IntoResponse {
+    if !is_valid_session_id(&payload.session_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PresenceResponse { active_viewers: 0 }),
+        );
+    }
+
+    let active_viewers = apply_presence_update(&state, payload).await;
+    (StatusCode::OK, Json(PresenceResponse { active_viewers }))
+}
+
 async fn btc_prices(State(state): State<AppState>) -> impl IntoResponse {
-    let (coingecko, coinbase, kraken) = tokio::join!(
-        fetch_coingecko(&state.client),
-        fetch_coinbase(&state.client),
-        fetch_kraken(&state.client),
-    );
+    let active_viewers = active_viewer_count(&state).await;
+    let mut refresh_succeeded = false;
+    let mut refresh_skipped_reason = None;
+    let mut refresh_error = None;
 
-    let mut sources = Vec::new();
-    let mut warnings = Vec::new();
+    if active_viewers == 0 {
+        refresh_skipped_reason = Some(
+            "Refresh skipped: no active viewers are currently tracked. Open the dashboard tab to resume updates."
+                .to_string(),
+        );
+    } else {
+        let _guard = state.refresh_lock.lock().await;
+        let now = now_unix();
 
-    for result in [coingecko, coinbase, kraken] {
-        match result {
-            Ok(price) => sources.push(price),
-            Err(err) => warnings.push(err),
+        match load_latest_snapshot(state.db_path.clone()).await {
+            Ok(snapshot) => {
+                let age = snapshot
+                    .as_ref()
+                    .and_then(|record| snapshot_age_seconds(record, now));
+
+                if let Some(reason) = refresh_skip_reason(active_viewers, age) {
+                    refresh_skipped_reason = Some(reason);
+                } else if let Err(err) = refresh_snapshot(&state, snapshot.clone()).await {
+                    refresh_error = Some(err);
+                } else {
+                    refresh_succeeded = true;
+                }
+            }
+            Err(err) => {
+                refresh_error = Some(format!("Failed to inspect SQLite before refresh: {err}"));
+            }
         }
     }
 
-    let (average_price, spread) = if sources.is_empty() {
-        (None, None)
-    } else {
-        let total: f64 = sources.iter().map(|p| p.price_usd).sum();
-        let average = total / sources.len() as f64;
-        let min = sources
-            .iter()
-            .map(|p| p.price_usd)
-            .fold(f64::INFINITY, f64::min);
-        let max = sources
-            .iter()
-            .map(|p| p.price_usd)
-            .fold(f64::NEG_INFINITY, f64::max);
-        (Some(average), Some(max - min))
-    };
+    let response_now = now_unix();
+    match load_latest_snapshot(state.db_path.clone()).await {
+        Ok(Some(snapshot)) => {
+            let fetched_age_seconds = snapshot_age_seconds(&snapshot, response_now);
+            let stale = fetched_age_seconds
+                .map(|age| age >= REFRESH_INTERVAL_SECONDS)
+                .unwrap_or(true);
+            let mut warnings = snapshot.warnings.clone();
 
-    let status = if sources.is_empty() {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
-    };
+            if let Some(err) = refresh_error {
+                warnings.insert(
+                    0,
+                    format!("Refresh failed; serving latest SQLite snapshot: {err}"),
+                );
+            }
 
-    (
-        status,
-        Json(PriceResponse {
-            symbol: "BTC",
-            currency: "USD",
-            sources,
-            average_price,
-            spread,
-            fetched_at_unix: now_unix(),
-            warnings,
-        }),
-    )
+            (
+                StatusCode::OK,
+                Json(PriceResponse {
+                    symbol: "BTC",
+                    currency: "USD",
+                    sources: snapshot.sources,
+                    average_price: snapshot.average_price,
+                    spread: snapshot.spread,
+                    fetched_at_unix: snapshot.fetched_at_unix,
+                    fetched_age_seconds,
+                    warnings,
+                    refresh_succeeded,
+                    stale,
+                    active_viewers,
+                    refresh_skipped_reason,
+                }),
+            )
+        }
+        Ok(None) => {
+            let mut warnings = vec!["No stored BTC price snapshot is available yet.".to_string()];
+            if let Some(err) = refresh_error {
+                warnings.push(err);
+            }
+
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(PriceResponse {
+                    symbol: "BTC",
+                    currency: "USD",
+                    sources: Vec::new(),
+                    average_price: None,
+                    spread: None,
+                    fetched_at_unix: 0,
+                    fetched_age_seconds: None,
+                    warnings,
+                    refresh_succeeded: false,
+                    stale: true,
+                    active_viewers,
+                    refresh_skipped_reason,
+                }),
+            )
+        }
+        Err(err) => {
+            warn!("failed to load SQLite snapshot: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(PriceResponse {
+                    symbol: "BTC",
+                    currency: "USD",
+                    sources: Vec::new(),
+                    average_price: None,
+                    spread: None,
+                    fetched_at_unix: 0,
+                    fetched_age_seconds: None,
+                    warnings: vec!["Failed to load stored price data.".to_string()],
+                    refresh_succeeded: false,
+                    stale: true,
+                    active_viewers,
+                    refresh_skipped_reason,
+                }),
+            )
+        }
+    }
 }
 
 async fn fetch_coingecko(client: &Client) -> Result<SourcePrice, String> {
@@ -139,7 +309,7 @@ async fn fetch_coingecko(client: &Client) -> Result<SourcePrice, String> {
         .ok_or_else(|| "CoinGecko response missing bitcoin.usd".to_string())?;
 
     Ok(SourcePrice {
-        source: "CoinGecko",
+        source: "CoinGecko".to_string(),
         price_usd: price,
     })
 }
@@ -167,7 +337,7 @@ async fn fetch_coinbase(client: &Client) -> Result<SourcePrice, String> {
         .map_err(|e| format!("Coinbase amount parse failed: {e}"))?;
 
     Ok(SourcePrice {
-        source: "Coinbase",
+        source: "Coinbase".to_string(),
         price_usd: price,
     })
 }
@@ -202,15 +372,391 @@ async fn fetch_kraken(client: &Client) -> Result<SourcePrice, String> {
         .map_err(|e| format!("Kraken close parse failed: {e}"))?;
 
     Ok(SourcePrice {
-        source: "Kraken",
+        source: "Kraken".to_string(),
         price_usd: price,
     })
 }
 
-fn now_unix() -> u64 {
+async fn refresh_snapshot(
+    state: &AppState,
+    latest_snapshot: Option<SnapshotRecord>,
+) -> Result<(), String> {
+    let next_source = UpstreamSource::next_source(
+        latest_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.refreshed_source.as_deref()),
+    );
+    let refreshed_price = fetch_round_robin_source(&state.client, next_source).await?;
+    let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed_price);
+    let (average_price, spread) = summarize_prices(&sources);
+
+    let snapshot = SnapshotRecord {
+        fetched_at_unix: now_unix(),
+        sources,
+        average_price,
+        spread,
+        warnings: Vec::new(),
+        refreshed_source: Some(next_source.name().to_string()),
+    };
+
+    store_snapshot(state.db_path.clone(), snapshot).await
+}
+
+async fn fetch_round_robin_source(
+    client: &Client,
+    source: UpstreamSource,
+) -> Result<SourcePrice, String> {
+    match source {
+        UpstreamSource::CoinGecko => fetch_coingecko(client).await,
+        UpstreamSource::Coinbase => fetch_coinbase(client).await,
+        UpstreamSource::Kraken => fetch_kraken(client).await,
+    }
+}
+
+fn merge_snapshot_sources(
+    latest_snapshot: Option<&SnapshotRecord>,
+    refreshed_price: SourcePrice,
+) -> Vec<SourcePrice> {
+    let mut source_prices = HashMap::new();
+
+    if let Some(snapshot) = latest_snapshot {
+        for source in &snapshot.sources {
+            source_prices.insert(source.source.clone(), source.price_usd);
+        }
+    }
+
+    source_prices.insert(refreshed_price.source.clone(), refreshed_price.price_usd);
+    ordered_sources(source_prices)
+}
+
+fn ordered_sources(mut source_prices: HashMap<String, f64>) -> Vec<SourcePrice> {
+    let mut sources = Vec::new();
+
+    for source in UpstreamSource::ALL {
+        if let Some(price_usd) = source_prices.remove(source.name()) {
+            sources.push(SourcePrice {
+                source: source.name().to_string(),
+                price_usd,
+            });
+        }
+    }
+
+    let mut extras: Vec<_> = source_prices
+        .into_iter()
+        .map(|(source, price_usd)| SourcePrice { source, price_usd })
+        .collect();
+    extras.sort_by(|left, right| left.source.cmp(&right.source));
+    sources.extend(extras);
+
+    sources
+}
+
+fn summarize_prices(sources: &[SourcePrice]) -> (Option<f64>, Option<f64>) {
+    if sources.is_empty() {
+        return (None, None);
+    }
+
+    let total: f64 = sources.iter().map(|p| p.price_usd).sum();
+    let average = total / sources.len() as f64;
+    let min = sources
+        .iter()
+        .map(|p| p.price_usd)
+        .fold(f64::INFINITY, f64::min);
+    let max = sources
+        .iter()
+        .map(|p| p.price_usd)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    (Some(average), Some(max - min))
+}
+
+async fn apply_presence_update(state: &AppState, payload: PresencePayload) -> usize {
+    let now = now_unix();
+    let mut viewers = state.viewers.lock().await;
+    prune_inactive_viewers(&mut viewers, now);
+
+    if payload.active {
+        viewers.insert(payload.session_id, now);
+    } else {
+        viewers.remove(&payload.session_id);
+    }
+
+    viewers.len()
+}
+
+async fn active_viewer_count(state: &AppState) -> usize {
+    let now = now_unix();
+    let mut viewers = state.viewers.lock().await;
+    prune_inactive_viewers(&mut viewers, now);
+    viewers.len()
+}
+
+fn prune_inactive_viewers(viewers: &mut HashMap<String, i64>, now: i64) {
+    viewers.retain(|_, last_seen| now.saturating_sub(*last_seen) <= VIEWER_TTL_SECONDS);
+}
+
+fn snapshot_age_seconds(snapshot: &SnapshotRecord, now: i64) -> Option<i64> {
+    Some(now.saturating_sub(snapshot.fetched_at_unix))
+}
+
+fn refresh_skip_reason(active_viewers: usize, snapshot_age: Option<i64>) -> Option<String> {
+    if active_viewers == 0 {
+        return Some(
+            "Refresh skipped: no active viewers are currently tracked. Open the dashboard tab to resume updates."
+                .to_string(),
+        );
+    }
+
+    if let Some(age) = snapshot_age {
+        if age < REFRESH_INTERVAL_SECONDS {
+            return Some(format!(
+                "Refresh skipped: latest snapshot is {age}s old; minimum refresh interval is {REFRESH_INTERVAL_SECONDS}s."
+            ));
+        }
+    }
+
+    None
+}
+
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= 128
+        && session_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+}
+
+fn database_path() -> PathBuf {
+    std::env::var("DATABASE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("data/bitcoin_prices.db"))
+}
+
+async fn init_db(db_path: PathBuf) -> Result<(), String> {
+    run_blocking(move || init_db_sync(&db_path)).await
+}
+
+fn init_db_sync(db_path: &Path) -> Result<(), String> {
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create database directory {parent:?}: {e}"))?;
+    }
+
+    let conn = open_connection(db_path)?;
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS price_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetched_at_unix INTEGER NOT NULL,
+            average_price REAL,
+            spread REAL,
+            warnings_json TEXT NOT NULL,
+            refreshed_source TEXT
+        );
+        CREATE TABLE IF NOT EXISTS source_prices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            price_usd REAL NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES price_snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_prices_snapshot_id
+            ON source_prices(snapshot_id);
+        ",
+    )
+    .map_err(|e| format!("failed to initialize schema: {e}"))?;
+
+    ensure_snapshot_column(&conn, "refreshed_source", "TEXT")?;
+
+    Ok(())
+}
+
+fn ensure_snapshot_column(
+    conn: &Connection,
+    column_name: &str,
+    column_type: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(price_snapshots)")
+        .map_err(|e| format!("failed to inspect price_snapshots schema: {e}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("failed to query price_snapshots schema: {e}"))?;
+
+    for column in columns {
+        if column.map_err(|e| format!("failed to decode schema row: {e}"))? == column_name {
+            return Ok(());
+        }
+    }
+
+    conn.execute(
+        &format!("ALTER TABLE price_snapshots ADD COLUMN {column_name} {column_type}"),
+        [],
+    )
+    .map_err(|e| format!("failed to add {column_name} column to price_snapshots: {e}"))?;
+
+    Ok(())
+}
+
+async fn store_snapshot(db_path: PathBuf, snapshot: SnapshotRecord) -> Result<(), String> {
+    run_blocking(move || store_snapshot_sync(&db_path, snapshot)).await
+}
+
+fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), String> {
+    let mut conn = open_connection(db_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("failed to start SQLite transaction: {e}"))?;
+
+    let warnings_json = serde_json::to_string(&snapshot.warnings)
+        .map_err(|e| format!("failed to encode warnings as JSON: {e}"))?;
+
+    tx.execute(
+        "INSERT INTO price_snapshots (
+             fetched_at_unix,
+             average_price,
+             spread,
+             warnings_json,
+             refreshed_source
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            snapshot.fetched_at_unix,
+            snapshot.average_price,
+            snapshot.spread,
+            warnings_json,
+            snapshot.refreshed_source
+        ],
+    )
+    .map_err(|e| format!("failed to insert price snapshot: {e}"))?;
+
+    let snapshot_id = tx.last_insert_rowid();
+    let mut stmt = tx
+        .prepare(
+            "INSERT INTO source_prices (snapshot_id, source, price_usd)
+             VALUES (?1, ?2, ?3)",
+        )
+        .map_err(|e| format!("failed to prepare source insert: {e}"))?;
+
+    for source in snapshot.sources {
+        stmt.execute(params![snapshot_id, source.source, source.price_usd])
+            .map_err(|e| format!("failed to insert source price: {e}"))?;
+    }
+
+    drop(stmt);
+    tx.commit()
+        .map_err(|e| format!("failed to commit SQLite transaction: {e}"))?;
+
+    Ok(())
+}
+
+async fn load_latest_snapshot(db_path: PathBuf) -> Result<Option<SnapshotRecord>, String> {
+    run_blocking(move || load_latest_snapshot_sync(&db_path)).await
+}
+
+fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, String> {
+    let conn = open_connection(db_path)?;
+    let latest = conn
+        .query_row(
+            "
+            SELECT id, fetched_at_unix, average_price, spread, warnings_json, refreshed_source
+            FROM price_snapshots
+            ORDER BY fetched_at_unix DESC, id DESC
+            LIMIT 1
+            ",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| format!("failed to query latest snapshot: {e}"))?;
+
+    let Some((
+        snapshot_id,
+        fetched_at_unix,
+        average_price,
+        spread,
+        warnings_json,
+        refreshed_source,
+    )) = latest
+    else {
+        return Ok(None);
+    };
+
+    let warnings = serde_json::from_str::<Vec<String>>(&warnings_json)
+        .map_err(|e| format!("failed to decode stored warnings: {e}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT source, price_usd
+            FROM source_prices
+            WHERE snapshot_id = ?1
+            ORDER BY
+                CASE source
+                    WHEN 'CoinGecko' THEN 0
+                    WHEN 'Coinbase' THEN 1
+                    WHEN 'Kraken' THEN 2
+                    ELSE 99
+                END,
+                source ASC
+            ",
+        )
+        .map_err(|e| format!("failed to prepare source lookup: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![snapshot_id], |row| {
+            Ok(SourcePrice {
+                source: row.get(0)?,
+                price_usd: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("failed to query stored source prices: {e}"))?;
+
+    let mut sources = Vec::new();
+    for row in rows {
+        sources.push(row.map_err(|e| format!("failed to decode stored source row: {e}"))?);
+    }
+
+    Ok(Some(SnapshotRecord {
+        fetched_at_unix,
+        sources,
+        average_price,
+        spread,
+        warnings,
+        refreshed_source,
+    }))
+}
+
+fn open_connection(db_path: &Path) -> Result<Connection, String> {
+    Connection::open(db_path)
+        .map_err(|e| format!("failed to open SQLite database at {db_path:?}: {e}"))
+}
+
+async fn run_blocking<T>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    task::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("blocking task failed: {e}"))?
+}
+
+fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 const INDEX_HTML: &str = r##"<!doctype html>
@@ -218,12 +764,13 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BTC Matrix Tracker</title>
+    <title>BTC Tracker</title>
     <style>
       :root {
         --bg-0: #000000;
         --neon: #56ff75;
         --neon-soft: #3ccf57;
+        --warn: #ffe66d;
         --danger: #ff6868;
       }
       * {
@@ -246,7 +793,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       main {
         position: relative;
         z-index: 1;
-        max-width: 900px;
+        max-width: 980px;
         margin: 0 auto;
         padding: 2rem 1rem 3rem;
       }
@@ -275,7 +822,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 0.8rem;
       }
       .card {
@@ -293,8 +840,15 @@ const INDEX_HTML: &str = r##"<!doctype html>
         font-size: 1.15rem;
         font-weight: 700;
       }
+      .note {
+        margin-top: 0.9rem;
+        color: #b9ffc6;
+      }
       .status-bad {
         color: var(--danger);
+      }
+      .status-warn {
+        color: var(--warn);
       }
       .warnings {
         margin: 0;
@@ -311,8 +865,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     <canvas id="rain"></canvas>
     <main>
       <section class="panel">
-        <h1 class="title">BTC MATRIX TRACKER</h1>
-        <p class="sub">Multi-source spot pricing feed</p>
+        <h1 class="title">BTC TRACKER</h1>
+        <p class="sub">Presence-tracked SQLite-backed round-robin spot pricing feed</p>
       </section>
 
       <section class="panel">
@@ -324,14 +878,19 @@ const INDEX_HTML: &str = r##"<!doctype html>
             <div class="value" id="spread">-</div>
           </div>
           <div class="card">
-            <div class="label">Updated</div>
+            <div class="label">SQLite Snapshot</div>
             <div class="value" id="updated">-</div>
+          </div>
+          <div class="card">
+            <div class="label">Active Viewers</div>
+            <div class="value" id="viewers">0</div>
           </div>
           <div class="card">
             <div class="label">Status</div>
             <div class="value" id="status">Connecting</div>
           </div>
         </div>
+        <p class="note" id="note">Tracking tab presence, rotating upstream checks, and enforcing a 10-second refresh gate.</p>
       </section>
 
       <section class="panel">
@@ -352,9 +911,40 @@ const INDEX_HTML: &str = r##"<!doctype html>
       const avgEl = document.getElementById("avg");
       const spreadEl = document.getElementById("spread");
       const updatedEl = document.getElementById("updated");
+      const viewersEl = document.getElementById("viewers");
       const statusEl = document.getElementById("status");
+      const noteEl = document.getElementById("note");
       const sourcesEl = document.getElementById("sources");
       const warningsEl = document.getElementById("warnings");
+      const sessionKey = "btc-matrix-session-id";
+      const sessionId = sessionStorage.getItem(sessionKey) || crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, "_");
+      sessionStorage.setItem(sessionKey, sessionId);
+      let refreshTimer = null;
+
+      function setStatus(label, className) {
+        statusEl.textContent = label;
+        statusEl.classList.remove("status-bad", "status-warn");
+        if (className) {
+          statusEl.classList.add(className);
+        }
+      }
+
+      async function sendPresence(active) {
+        const payload = JSON.stringify({ session_id: sessionId, active });
+
+        if (!active && navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon("/api/presence", blob);
+          return;
+        }
+
+        await fetch("/api/presence", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: !active,
+        });
+      }
 
       async function refresh() {
         try {
@@ -362,14 +952,31 @@ const INDEX_HTML: &str = r##"<!doctype html>
           const data = await res.json();
           const healthy = res.ok && data.sources && data.sources.length > 0;
 
-          statusEl.textContent = healthy ? "LIVE" : "DEGRADED";
-          statusEl.classList.toggle("status-bad", !healthy);
+          viewersEl.textContent = String(data.active_viewers ?? 0);
 
-          avgEl.textContent = data.average_price ? fmt.format(data.average_price) : "Unavailable";
-          spreadEl.textContent = data.spread ? fmt.format(data.spread) : "-";
+          if (!healthy) {
+            setStatus("OFFLINE", "status-bad");
+          } else if (data.stale) {
+            setStatus("STALE", "status-warn");
+          } else {
+            setStatus("LIVE");
+          }
+
+          avgEl.textContent = data.average_price != null ? fmt.format(data.average_price) : "Unavailable";
+          spreadEl.textContent = data.spread != null ? fmt.format(data.spread) : "-";
           updatedEl.textContent = data.fetched_at_unix
-            ? new Date(data.fetched_at_unix * 1000).toLocaleTimeString()
+            ? new Date(data.fetched_at_unix * 1000).toLocaleString()
             : "-";
+
+          if (data.refresh_succeeded) {
+            noteEl.textContent = "One upstream source price was refreshed and written to SQLite for this cycle.";
+          } else if (data.refresh_skipped_reason) {
+            noteEl.textContent = data.refresh_skipped_reason;
+          } else if (data.stale) {
+            noteEl.textContent = "Serving an older SQLite snapshot because the upstream refresh did not complete.";
+          } else {
+            noteEl.textContent = "Serving the latest SQLite snapshot.";
+          }
 
           sourcesEl.innerHTML = "";
           for (const source of data.sources || []) {
@@ -390,11 +997,59 @@ const INDEX_HTML: &str = r##"<!doctype html>
             }
           }
         } catch (err) {
-          statusEl.textContent = "OFFLINE";
-          statusEl.classList.add("status-bad");
+          setStatus("OFFLINE", "status-bad");
           avgEl.textContent = "Unavailable";
+          noteEl.textContent = "Dashboard refresh failed before a SQLite snapshot could be loaded.";
           warningsEl.innerHTML = `<li>UI fetch failed: ${String(err)}</li>`;
         }
+      }
+
+      async function cycle() {
+        if (document.visibilityState !== "visible") {
+          return;
+        }
+
+        await sendPresence(true);
+        await refresh();
+      }
+
+      function startTracking() {
+        if (refreshTimer !== null || document.visibilityState !== "visible") {
+          return;
+        }
+
+        cycle();
+        refreshTimer = setInterval(cycle, 5000);
+      }
+
+      function stopTracking() {
+        if (refreshTimer !== null) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+
+        sendPresence(false).catch(() => {});
+        setStatus("IDLE", "status-warn");
+        noteEl.textContent = "Tracking paused while this tab is hidden.";
+      }
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          startTracking();
+        } else {
+          stopTracking();
+        }
+      });
+
+      window.addEventListener("pagehide", () => {
+        sendPresence(false).catch(() => {});
+      });
+
+      if (document.visibilityState === "visible") {
+        startTracking();
+      } else {
+        setStatus("IDLE", "status-warn");
+        noteEl.textContent = "Open this tab to start upstream refresh tracking.";
       }
 
       function matrixRain() {
@@ -454,9 +1109,60 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
 
       matrixRain();
-      refresh();
-      setInterval(refresh, 60000);
     </script>
   </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        UpstreamSource, VIEWER_TTL_SECONDS, is_valid_session_id, prune_inactive_viewers,
+        refresh_skip_reason,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn session_ids_must_be_ascii_and_reasonable_length() {
+        assert!(is_valid_session_id("viewer_123-abc"));
+        assert!(!is_valid_session_id(""));
+        assert!(!is_valid_session_id("contains space"));
+        assert!(!is_valid_session_id(&"x".repeat(129)));
+    }
+
+    #[test]
+    fn refresh_is_skipped_when_snapshot_is_too_recent() {
+        let reason = refresh_skip_reason(1, Some(4));
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn inactive_viewers_are_pruned() {
+        let mut viewers = HashMap::from([
+            ("active".to_string(), 100),
+            ("stale".to_string(), 100 - VIEWER_TTL_SECONDS - 1),
+        ]);
+
+        prune_inactive_viewers(&mut viewers, 100);
+
+        assert!(viewers.contains_key("active"));
+        assert!(!viewers.contains_key("stale"));
+    }
+
+    #[test]
+    fn upstream_sources_rotate_in_round_robin_order() {
+        assert_eq!(UpstreamSource::next_source(None), UpstreamSource::CoinGecko);
+        assert_eq!(
+            UpstreamSource::next_source(Some("CoinGecko")),
+            UpstreamSource::Coinbase
+        );
+        assert_eq!(
+            UpstreamSource::next_source(Some("Coinbase")),
+            UpstreamSource::Kraken
+        );
+        assert_eq!(
+            UpstreamSource::next_source(Some("Kraken")),
+            UpstreamSource::CoinGecko
+        );
+    }
+}

@@ -1,5 +1,9 @@
 Lets make a web app with a UI that displays the current price of Bitcoin. 
 - use a few different free and open-source bitcoin price trackers
+- store the price in a sqlite database locally in the container. query the upstream price APIs only when a user is on the site. store the price data in the sqlite and serve up the price from the sqlite in a secure manner.
+- only while a user is on the site (we will have to track this) do we update the price
+- only update the price if the price has not been updated in the last 10 seconds
 - make it look cool like the matrix
 - use Rust
 - use a container
+

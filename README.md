@@ -1,26 +1,32 @@
 # Bitcoin Price Tracker
 
-Rust web app that shows BTC/USD spot prices from multiple free sources with a Matrix-style UI.
+Rust BTC/USD tracker with a terminal-style UI.
 
-## Sources
+## Behavior
 
-- CoinGecko
-- Coinbase
-- Kraken
+- Uses CoinGecko, Coinbase, and Kraken
+- Stores prices in local SQLite
+- Serves the latest stored snapshot to the UI
+- Refreshes only while a visible tab is active
+- Rotates upstream checks one source at a time
+- Skips refreshes when the latest snapshot is under 10 seconds old
 
-## Run locally
+## Local
 
 ```bash
 cargo run
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` in a visible tab.
 
-## Run in container
+## Container
 
 ```bash
 docker build -t btc-matrix .
-docker run --rm -p 3000:3000 btc-matrix
+docker run --rm -p 3000:3000 -v "$(pwd)/data:/app/data" btc-matrix
 ```
 
-Open `http://localhost:3000`.
+## Config
+
+- Default DB: `data/bitcoin_prices.db`
+- Override DB: `DATABASE_PATH=/custom/path/bitcoin_prices.db`
