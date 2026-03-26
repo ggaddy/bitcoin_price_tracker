@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTC Tracker</title>
+    <style>
+      :root {
+        --bg-0: #000000;
+        --neon: #56ff75;
+        --neon-soft: #3ccf57;
+        --warn: #ffe66d;
+        --danger: #ff6868;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--neon);
+        font-family: "Courier New", Courier, monospace;
+        background: var(--bg-0);
+        overflow-x: hidden;
+      }
+      canvas#rain {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        opacity: 0.28;
+      }
+      main {
+        position: relative;
+        z-index: 1;
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 2rem 1rem 3rem;
+      }
+      .panel {
+        border: 1px solid rgba(86, 255, 117, 0.45);
+        background: linear-gradient(140deg, rgba(3, 16, 3, 0.9), rgba(8, 30, 8, 0.74));
+        box-shadow: 0 0 0.8rem rgba(86, 255, 117, 0.25), inset 0 0 0.6rem rgba(86, 255, 117, 0.08);
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 0.5rem;
+      }
+      .title {
+        margin: 0 0 0.4rem;
+        font-size: clamp(1.4rem, 4vw, 2.4rem);
+        letter-spacing: 0.08em;
+        text-shadow: 0 0 0.6rem rgba(86, 255, 117, 0.6);
+      }
+      .sub {
+        margin: 0;
+        color: var(--neon-soft);
+      }
+      .hero-price {
+        margin: 0;
+        font-size: clamp(2rem, 8vw, 4rem);
+        text-shadow: 0 0 0.8rem rgba(86, 255, 117, 0.6);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.8rem;
+      }
+      .card {
+        border: 1px solid rgba(86, 255, 117, 0.3);
+        border-radius: 0.4rem;
+        padding: 0.75rem;
+        background: rgba(8, 22, 8, 0.65);
+      }
+      .label {
+        font-size: 0.85rem;
+        color: #96f3a8;
+      }
+      .value {
+        margin-top: 0.2rem;
+        font-size: 1.15rem;
+        font-weight: 700;
+      }
+      .note {
+        margin-top: 0.9rem;
+        color: #b9ffc6;
+      }
+      .status-bad {
+        color: var(--danger);
+      }
+      .status-warn {
+        color: var(--warn);
+      }
+      .warnings {
+        margin: 0;
+        padding-left: 1rem;
+      }
+      @media (max-width: 560px) {
+        main {
+          padding-top: 1.2rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="rain"></canvas>
+    <main>
+      <section class="panel">
+        <h1 class="title">BTC TRACKER</h1>
+        <p class="sub">spot pricing feed</p>
+      </section>
+
+      <section class="panel">
+        <p class="label">Average BTC/USD</p>
+        <h2 class="hero-price" id="avg">Loading...</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="label">Spread</div>
+            <div class="value" id="spread">-</div>
+          </div>
+          <div class="card">
+            <div class="label">SQLite Snapshot</div>
+            <div class="value" id="updated">-</div>
+          </div>
+          <div class="card">
+            <div class="label">Active Viewers</div>
+            <div class="value" id="viewers">0</div>
+          </div>
+          <div class="card">
+            <div class="label">Status</div>
+            <div class="value" id="status">Connecting</div>
+          </div>
+        </div>
+        <p class="note" id="note">Tracking tab presence, rotating upstream checks, and enforcing a 10-second refresh gate.</p>
+      </section>
+
+      <section class="panel">
+        <p class="label">Sources</p>
+        <div class="grid" id="sources"></div>
+      </section>
+
+      <section class="panel">
+        <p class="label">Warnings</p>
+        <ul class="warnings" id="warnings">
+          <li>None</li>
+        </ul>
+      </section>
+    </main>
+
+    <script>
+      const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+      const avgEl = document.getElementById("avg");
+      const spreadEl = document.getElementById("spread");
+      const updatedEl = document.getElementById("updated");
+      const viewersEl = document.getElementById("viewers");
+      const statusEl = document.getElementById("status");
+      const noteEl = document.getElementById("note");
+      const sourcesEl = document.getElementById("sources");
+      const warningsEl = document.getElementById("warnings");
+      const sessionKey = "btc-matrix-session-id";
+      const sessionId = sessionStorage.getItem(sessionKey) || crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, "_");
+      sessionStorage.setItem(sessionKey, sessionId);
+      let refreshTimer = null;
+
+      function setStatus(label, className) {
+        statusEl.textContent = label;
+        statusEl.classList.remove("status-bad", "status-warn");
+        if (className) {
+          statusEl.classList.add(className);
+        }
+      }
+
+      async function sendPresence(active) {
+        const payload = JSON.stringify({ session_id: sessionId, active });
+
+        if (!active && navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon("/api/presence", blob);
+          return;
+        }
+
+        await fetch("/api/presence", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: !active,
+        });
+      }
+
+      async function refresh() {
+        try {
+          const res = await fetch("/api/price");
+          const data = await res.json();
+          const healthy = res.ok && data.sources && data.sources.length > 0;
+
+          viewersEl.textContent = String(data.active_viewers ?? 0);
+
+          if (!healthy) {
+            setStatus("OFFLINE", "status-bad");
+          } else if (data.stale) {
+            setStatus("STALE", "status-warn");
+          } else {
+            setStatus("LIVE");
+          }
+
+          avgEl.textContent = data.average_price != null ? fmt.format(data.average_price) : "Unavailable";
+          spreadEl.textContent = data.spread != null ? fmt.format(data.spread) : "-";
+          updatedEl.textContent = data.fetched_at_unix
+            ? new Date(data.fetched_at_unix * 1000).toLocaleString()
+            : "-";
+
+          if (data.refresh_succeeded) {
+            noteEl.textContent = "One upstream source price was refreshed and written to SQLite for this cycle.";
+          } else if (data.refresh_skipped_reason) {
+            noteEl.textContent = data.refresh_skipped_reason;
+          } else if (data.stale) {
+            noteEl.textContent = "Serving an older SQLite snapshot because the upstream refresh did not complete.";
+          } else {
+            noteEl.textContent = "Serving the latest SQLite snapshot.";
+          }
+
+          sourcesEl.innerHTML = "";
+          for (const source of data.sources || []) {
+            const node = document.createElement("article");
+            node.className = "card";
+            node.innerHTML = `<div class="label">${source.source}</div><div class="value">${fmt.format(source.price_usd)}</div>`;
+            sourcesEl.appendChild(node);
+          }
+
+          warningsEl.innerHTML = "";
+          if ((data.warnings || []).length === 0) {
+            warningsEl.innerHTML = "<li>None</li>";
+          } else {
+            for (const warning of data.warnings) {
+              const li = document.createElement("li");
+              li.textContent = warning;
+              warningsEl.appendChild(li);
+            }
+          }
+        } catch (err) {
+          setStatus("OFFLINE", "status-bad");
+          avgEl.textContent = "Unavailable";
+          noteEl.textContent = "Dashboard refresh failed before a SQLite snapshot could be loaded.";
+          warningsEl.innerHTML = `<li>UI fetch failed: ${String(err)}</li>`;
+        }
+      }
+
+      async function cycle() {
+        if (document.visibilityState !== "visible") {
+          return;
+        }
+
+        await sendPresence(true);
+        await refresh();
+      }
+
+      function startTracking() {
+        if (refreshTimer !== null || document.visibilityState !== "visible") {
+          return;
+        }
+
+        cycle();
+        refreshTimer = setInterval(cycle, 5000);
+      }
+
+      function stopTracking() {
+        if (refreshTimer !== null) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+
+        sendPresence(false).catch(() => {});
+        setStatus("IDLE", "status-warn");
+        noteEl.textContent = "Tracking paused while this tab is hidden.";
+      }
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          startTracking();
+        } else {
+          stopTracking();
+        }
+      });
+
+      window.addEventListener("pagehide", () => {
+        sendPresence(false).catch(() => {});
+      });
+
+      if (document.visibilityState === "visible") {
+        startTracking();
+      } else {
+        setStatus("IDLE", "status-warn");
+        noteEl.textContent = "Open this tab to start upstream refresh tracking.";
+      }
+
+      function matrixRain() {
+        const canvas = document.getElementById("rain");
+        const ctx = canvas.getContext("2d");
+        const chars = "01BTC$#@";
+        const cell = 24;
+        let streams = [];
+        let columns = 0;
+
+        function resize() {
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+          columns = Math.max(1, Math.floor(canvas.width / cell));
+          streams = Array.from({ length: columns }, () => ({
+            y: -Math.random() * canvas.height,
+            speed: 0.5 + Math.random() * 1.8,
+            active: Math.random() < 0.28,
+          }));
+        }
+
+        function draw() {
+          ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.font = "17px monospace";
+          for (let i = 0; i < streams.length; i++) {
+            const stream = streams[i];
+
+            if (!stream.active && Math.random() < 0.02) {
+              stream.active = true;
+              stream.y = -Math.random() * canvas.height * 0.9;
+              stream.speed = 0.45 + Math.random() * 2.1;
+            }
+            if (!stream.active) continue;
+            if (Math.random() < 0.4) continue;
+
+            const text = chars[Math.floor(Math.random() * chars.length)];
+            ctx.fillStyle = Math.random() < 0.14 ? "#b9ffc6" : "#56ff75";
+            ctx.fillText(text, i * cell, stream.y);
+
+            if (Math.random() < 0.22) {
+              const ghostText = chars[Math.floor(Math.random() * chars.length)];
+              ctx.fillStyle = "rgba(86, 255, 117, 0.35)";
+              ctx.fillText(ghostText, i * cell, stream.y - cell);
+            }
+
+            stream.y += stream.speed * cell;
+            if (stream.y > canvas.height + Math.random() * canvas.height * 0.5) {
+              stream.active = false;
+            }
+          }
+        }
+
+        window.addEventListener("resize", resize);
+        resize();
+        setInterval(draw, 55);
+      }
+
+      matrixRain();
+    </script>
+  </body>
+</html>

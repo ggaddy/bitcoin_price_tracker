@@ -4,7 +4,7 @@ Rust BTC/USD tracker with a terminal-style UI.
 
 ## Behavior
 
-- Uses CoinGecko, Coinbase, and Kraken
+- Uses CoinGecko, Coinbase, Kraken, and Gemini
 - Stores prices in local SQLite
 - Serves the latest stored snapshot to the UI
 - Refreshes only while a visible tab is active
@@ -30,3 +30,9 @@ docker run --rm -p 3000:3000 -v "$(pwd)/data:/app/data" btc-matrix
 
 - Default DB: `data/bitcoin_prices.db`
 - Override DB: `DATABASE_PATH=/custom/path/bitcoin_prices.db`
+
+## Browser Test
+
+- Selenium smoke test uses `thirtyfour` and is ignored by default
+- End-to-end runner: `scripts/run_selenium_smoke_test.sh`
+- Useful overrides: `CONTAINER_ENGINE`, `WEBDRIVER_URL`, `SELENIUM_APP_HOST`, `SELENIUM_WAIT_SECONDS`
