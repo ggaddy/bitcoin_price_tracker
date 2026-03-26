@@ -21,22 +21,25 @@ use tracing::{info, warn};
 
 const REFRESH_INTERVAL_SECONDS: i64 = 10;
 const VIEWER_TTL_SECONDS: i64 = 15;
+const MAX_SNAPSHOT_HISTORY: i64 = 1_440;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UpstreamSource {
     CoinGecko,
     Coinbase,
     Kraken,
+    Gemini,
 }
 
 impl UpstreamSource {
-    const ALL: [Self; 3] = [Self::CoinGecko, Self::Coinbase, Self::Kraken];
+    const ALL: [Self; 4] = [Self::CoinGecko, Self::Coinbase, Self::Kraken, Self::Gemini];
 
     fn name(self) -> &'static str {
         match self {
             Self::CoinGecko => "CoinGecko",
             Self::Coinbase => "Coinbase",
             Self::Kraken => "Kraken",
+            Self::Gemini => "Gemini",
         }
     }
 
@@ -45,6 +48,7 @@ impl UpstreamSource {
             "CoinGecko" => Some(Self::CoinGecko),
             "Coinbase" => Some(Self::Coinbase),
             "Kraken" => Some(Self::Kraken),
+            "Gemini" => Some(Self::Gemini),
             _ => None,
         }
     }
@@ -377,6 +381,33 @@ async fn fetch_kraken(client: &Client) -> Result<SourcePrice, String> {
     })
 }
 
+async fn fetch_gemini(client: &Client) -> Result<SourcePrice, String> {
+    let value: Value = client
+        .get("https://api.gemini.com/v2/ticker/btcusd")
+        .send()
+        .await
+        .map_err(|e| format!("Gemini request failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Gemini HTTP error: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Gemini parse failed: {e}"))?;
+
+    let bid = value
+        .get("bid")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Gemini response missing bid".to_string())?;
+
+    let price = bid
+        .parse::<f64>()
+        .map_err(|e| format!("Gemini bid parse failed: {e}"))?;
+
+    Ok(SourcePrice {
+        source: "Gemini".to_string(),
+        price_usd: price,
+    })
+}
+
 async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
@@ -410,6 +441,7 @@ async fn fetch_round_robin_source(
         UpstreamSource::CoinGecko => fetch_coingecko(client).await,
         UpstreamSource::Coinbase => fetch_coinbase(client).await,
         UpstreamSource::Kraken => fetch_kraken(client).await,
+        UpstreamSource::Gemini => fetch_gemini(client).await,
     }
 }
 
@@ -599,6 +631,22 @@ fn ensure_snapshot_column(
     Ok(())
 }
 
+fn prune_snapshot_history(tx: &rusqlite::Transaction<'_>) -> Result<(), String> {
+    tx.execute(
+        "DELETE FROM price_snapshots
+         WHERE id IN (
+             SELECT id
+             FROM price_snapshots
+             ORDER BY fetched_at_unix DESC, id DESC
+             LIMIT -1 OFFSET ?1
+         )",
+        params![MAX_SNAPSHOT_HISTORY],
+    )
+    .map_err(|e| format!("failed to prune old price snapshots: {e}"))?;
+
+    Ok(())
+}
+
 async fn store_snapshot(db_path: PathBuf, snapshot: SnapshotRecord) -> Result<(), String> {
     run_blocking(move || store_snapshot_sync(&db_path, snapshot)).await
 }
@@ -645,6 +693,7 @@ fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), S
     }
 
     drop(stmt);
+    prune_snapshot_history(&tx)?;
     tx.commit()
         .map_err(|e| format!("failed to commit SQLite transaction: {e}"))?;
 
@@ -706,6 +755,7 @@ fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, S
                     WHEN 'CoinGecko' THEN 0
                     WHEN 'Coinbase' THEN 1
                     WHEN 'Kraken' THEN 2
+                    WHEN 'Gemini' THEN 3
                     ELSE 99
                 END,
                 source ASC
@@ -738,8 +788,12 @@ fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, S
 }
 
 fn open_connection(db_path: &Path) -> Result<Connection, String> {
-    Connection::open(db_path)
-        .map_err(|e| format!("failed to open SQLite database at {db_path:?}: {e}"))
+    let conn = Connection::open(db_path)
+        .map_err(|e| format!("failed to open SQLite database at {db_path:?}: {e}"))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|e| format!("failed to enable SQLite foreign keys for {db_path:?}: {e}"))?;
+
+    Ok(conn)
 }
 
 async fn run_blocking<T>(
@@ -866,7 +920,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     <main>
       <section class="panel">
         <h1 class="title">BTC TRACKER</h1>
-        <p class="sub">Presence-tracked SQLite-backed round-robin spot pricing feed</p>
+        <p class="sub">spot pricing feed</p>
       </section>
 
       <section class="panel">
@@ -1117,10 +1171,16 @@ const INDEX_HTML: &str = r##"<!doctype html>
 #[cfg(test)]
 mod tests {
     use super::{
-        UpstreamSource, VIEWER_TTL_SECONDS, is_valid_session_id, prune_inactive_viewers,
-        refresh_skip_reason,
+        MAX_SNAPSHOT_HISTORY, SnapshotRecord, SourcePrice, UpstreamSource, VIEWER_TTL_SECONDS,
+        init_db_sync, is_valid_session_id, load_latest_snapshot_sync, open_connection,
+        prune_inactive_viewers, refresh_skip_reason, store_snapshot_sync,
     };
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn session_ids_must_be_ascii_and_reasonable_length() {
@@ -1149,6 +1209,69 @@ mod tests {
         assert!(!viewers.contains_key("stale"));
     }
 
+    fn temp_db_path(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+
+        std::env::temp_dir().join(format!("bitcoin-price-tracker-{test_name}-{unique}.db"))
+    }
+
+    fn snapshot_for_test(index: i64) -> SnapshotRecord {
+        SnapshotRecord {
+            fetched_at_unix: index,
+            sources: vec![SourcePrice {
+                source: "CoinGecko".to_string(),
+                price_usd: 100_000.0 + index as f64,
+            }],
+            average_price: Some(100_000.0 + index as f64),
+            spread: Some(0.0),
+            warnings: Vec::new(),
+            refreshed_source: Some("CoinGecko".to_string()),
+        }
+    }
+
+    #[test]
+    fn snapshot_history_is_capped_and_prunes_source_rows() {
+        let db_path = temp_db_path("retention");
+        init_db_sync(&db_path).unwrap();
+
+        let total_snapshots = MAX_SNAPSHOT_HISTORY as usize + 5;
+        for index in 0..total_snapshots {
+            store_snapshot_sync(&db_path, snapshot_for_test(index as i64)).unwrap();
+        }
+
+        let conn = open_connection(&db_path).unwrap();
+        let snapshot_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM price_snapshots", [], |row| row.get(0))
+            .unwrap();
+        let source_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_prices", [], |row| row.get(0))
+            .unwrap();
+        let oldest_snapshot: i64 = conn
+            .query_row(
+                "SELECT MIN(fetched_at_unix) FROM price_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let latest_snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+
+        assert_eq!(snapshot_count, MAX_SNAPSHOT_HISTORY);
+        assert_eq!(source_count, MAX_SNAPSHOT_HISTORY);
+        assert_eq!(
+            oldest_snapshot,
+            (total_snapshots - MAX_SNAPSHOT_HISTORY as usize) as i64
+        );
+        assert_eq!(
+            latest_snapshot.fetched_at_unix,
+            (total_snapshots - 1) as i64
+        );
+
+        drop(conn);
+        fs::remove_file(&db_path).unwrap();
+    }
+
     #[test]
     fn upstream_sources_rotate_in_round_robin_order() {
         assert_eq!(UpstreamSource::next_source(None), UpstreamSource::CoinGecko);
@@ -1162,6 +1285,10 @@ mod tests {
         );
         assert_eq!(
             UpstreamSource::next_source(Some("Kraken")),
+            UpstreamSource::Gemini
+        );
+        assert_eq!(
+            UpstreamSource::next_source(Some("Gemini")),
             UpstreamSource::CoinGecko
         );
     }
