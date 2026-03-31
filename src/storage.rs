@@ -6,10 +6,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::task;
 
-use crate::{
-    config::MAX_SNAPSHOT_HISTORY,
-    models::{SnapshotRecord, SourcePrice},
-};
+use crate::models::{SnapshotRecord, SourcePrice};
 
 pub(crate) async fn init_db(db_path: PathBuf) -> Result<(), String> {
     run_blocking(move || init_db_sync(&db_path)).await
@@ -47,6 +44,7 @@ fn init_db_sync(db_path: &Path) -> Result<(), String> {
     .map_err(|error| format!("failed to initialize schema: {error}"))?;
 
     ensure_snapshot_column(&conn, "refreshed_source", "TEXT")?;
+    prune_snapshots_to_latest(&conn)?;
 
     Ok(())
 }
@@ -78,18 +76,20 @@ fn ensure_snapshot_column(
     Ok(())
 }
 
-fn prune_snapshot_history(tx: &rusqlite::Transaction<'_>) -> Result<(), String> {
-    tx.execute(
+fn prune_snapshots_to_latest(conn: &Connection) -> Result<(), String> {
+    conn.execute(
         "DELETE FROM price_snapshots
-         WHERE id IN (
+         WHERE id NOT IN (
              SELECT id
              FROM price_snapshots
              ORDER BY fetched_at_unix DESC, id DESC
-             LIMIT -1 OFFSET ?1
+             LIMIT 1
          )",
-        params![MAX_SNAPSHOT_HISTORY],
+        [],
     )
-    .map_err(|error| format!("failed to prune old price snapshots: {error}"))?;
+    .map_err(|error| {
+        format!("failed to prune stored price snapshots to the latest entry: {error}")
+    })?;
 
     Ok(())
 }
@@ -106,6 +106,10 @@ fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), S
     let tx = conn
         .transaction()
         .map_err(|error| format!("failed to start SQLite transaction: {error}"))?;
+
+    // Persist only the current merged snapshot instead of a refresh history.
+    tx.execute("DELETE FROM price_snapshots", [])
+        .map_err(|error| format!("failed to clear stored price snapshot: {error}"))?;
 
     let warnings_json = serde_json::to_string(&snapshot.warnings)
         .map_err(|error| format!("failed to encode warnings as JSON: {error}"))?;
@@ -143,7 +147,6 @@ fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), S
     }
 
     drop(stmt);
-    prune_snapshot_history(&tx)?;
     tx.commit()
         .map_err(|error| format!("failed to commit SQLite transaction: {error}"))?;
 
@@ -269,10 +272,9 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::{
-        config::MAX_SNAPSHOT_HISTORY,
-        models::{SnapshotRecord, SourcePrice},
-    };
+    use rusqlite::params;
+
+    use crate::models::{SnapshotRecord, SourcePrice};
 
     use super::{init_db_sync, load_latest_snapshot_sync, open_connection, store_snapshot_sync};
 
@@ -299,14 +301,32 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_history_is_capped_and_prunes_source_rows() {
-        let db_path = temp_db_path("retention");
+    fn store_snapshot_replaces_previous_snapshot_and_source_rows() {
+        let db_path = temp_db_path("latest-only");
         init_db_sync(&db_path).unwrap();
 
-        let total_snapshots = MAX_SNAPSHOT_HISTORY as usize + 5;
-        for index in 0..total_snapshots {
-            store_snapshot_sync(&db_path, snapshot_for_test(index as i64)).unwrap();
-        }
+        store_snapshot_sync(&db_path, snapshot_for_test(10)).unwrap();
+        store_snapshot_sync(
+            &db_path,
+            SnapshotRecord {
+                fetched_at_unix: 20,
+                sources: vec![
+                    SourcePrice {
+                        source: "CoinGecko".to_string(),
+                        price_usd: 200_000.0,
+                    },
+                    SourcePrice {
+                        source: "Coinbase".to_string(),
+                        price_usd: 200_100.0,
+                    },
+                ],
+                average_price: Some(200_050.0),
+                spread: Some(100.0),
+                warnings: vec!["rate limited".to_string()],
+                refreshed_source: Some("Coinbase".to_string()),
+            },
+        )
+        .unwrap();
 
         let conn = open_connection(&db_path).unwrap();
         let snapshot_count: i64 = conn
@@ -315,24 +335,113 @@ mod tests {
         let source_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_prices", [], |row| row.get(0))
             .unwrap();
-        let oldest_snapshot: i64 = conn
-            .query_row(
-                "SELECT MIN(fetched_at_unix) FROM price_snapshots",
-                [],
-                |row| row.get(0),
-            )
+        let latest_snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(source_count, 2);
+        assert_eq!(latest_snapshot.fetched_at_unix, 20);
+        assert_eq!(latest_snapshot.sources.len(), 2);
+        assert_eq!(latest_snapshot.average_price, Some(200_050.0));
+        assert_eq!(latest_snapshot.spread, Some(100.0));
+        assert_eq!(latest_snapshot.warnings, vec!["rate limited".to_string()]);
+        assert_eq!(
+            latest_snapshot.refreshed_source.as_deref(),
+            Some("Coinbase")
+        );
+
+        drop(conn);
+        fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn init_db_prunes_existing_history_to_latest_snapshot() {
+        let db_path = temp_db_path("init-prune");
+        init_db_sync(&db_path).unwrap();
+
+        let conn = open_connection(&db_path).unwrap();
+        conn.execute("DELETE FROM price_snapshots", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO price_snapshots (
+                 fetched_at_unix,
+                 average_price,
+                 spread,
+                 warnings_json,
+                 refreshed_source
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                10_i64,
+                Some(100_000.0_f64),
+                Some(0.0_f64),
+                "[]",
+                "CoinGecko"
+            ],
+        )
+        .unwrap();
+        let first_snapshot_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO source_prices (snapshot_id, source, price_usd)
+             VALUES (?1, ?2, ?3)",
+            params![first_snapshot_id, "CoinGecko", 100_000.0_f64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO price_snapshots (
+                 fetched_at_unix,
+                 average_price,
+                 spread,
+                 warnings_json,
+                 refreshed_source
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                20_i64,
+                Some(200_050.0_f64),
+                Some(100.0_f64),
+                "[\"warning\"]",
+                "Coinbase"
+            ],
+        )
+        .unwrap();
+        let second_snapshot_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO source_prices (snapshot_id, source, price_usd)
+             VALUES (?1, ?2, ?3)",
+            params![second_snapshot_id, "CoinGecko", 200_000.0_f64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO source_prices (snapshot_id, source, price_usd)
+             VALUES (?1, ?2, ?3)",
+            params![second_snapshot_id, "Coinbase", 200_100.0_f64],
+        )
+        .unwrap();
+
+        drop(conn);
+
+        init_db_sync(&db_path).unwrap();
+
+        let conn = open_connection(&db_path).unwrap();
+        let snapshot_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM price_snapshots", [], |row| row.get(0))
+            .unwrap();
+        let source_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_prices", [], |row| row.get(0))
             .unwrap();
         let latest_snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
 
-        assert_eq!(snapshot_count, MAX_SNAPSHOT_HISTORY);
-        assert_eq!(source_count, MAX_SNAPSHOT_HISTORY);
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(source_count, 2);
+        assert_eq!(latest_snapshot.fetched_at_unix, 20);
+        assert_eq!(latest_snapshot.sources.len(), 2);
+        assert_eq!(latest_snapshot.average_price, Some(200_050.0));
+        assert_eq!(latest_snapshot.spread, Some(100.0));
+        assert_eq!(latest_snapshot.warnings, vec!["warning".to_string()]);
         assert_eq!(
-            oldest_snapshot,
-            (total_snapshots - MAX_SNAPSHOT_HISTORY as usize) as i64
-        );
-        assert_eq!(
-            latest_snapshot.fetched_at_unix,
-            (total_snapshots - 1) as i64
+            latest_snapshot.refreshed_source.as_deref(),
+            Some("Coinbase")
         );
 
         drop(conn);
