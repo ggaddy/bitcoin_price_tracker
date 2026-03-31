@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use crate::{
     config::{REFRESH_INTERVAL_SECONDS, VIEWER_TTL_SECONDS},
@@ -11,11 +12,16 @@ pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePay
     let now = now_unix();
     let mut viewers = state.viewers.lock().await;
     prune_inactive_viewers(&mut viewers, now);
+    let previously_empty = viewers.is_empty();
 
     if payload.active {
         viewers.insert(payload.session_id, now);
     } else {
         viewers.remove(&payload.session_id);
+    }
+
+    if payload.active && previously_empty && !viewers.is_empty() {
+        state.full_refresh_pending.store(true, Ordering::SeqCst);
     }
 
     viewers.len()
@@ -69,9 +75,15 @@ pub(crate) fn is_valid_session_id(session_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
 
-    use super::{is_valid_session_id, prune_inactive_viewers, refresh_skip_reason};
+    use super::{
+        apply_presence_update, is_valid_session_id, prune_inactive_viewers, refresh_skip_reason,
+    };
     use crate::config::VIEWER_TTL_SECONDS;
+    use crate::models::PresencePayload;
+    use crate::state::AppState;
+    use std::path::PathBuf;
 
     #[test]
     fn session_ids_must_be_ascii_and_reasonable_length() {
@@ -98,5 +110,22 @@ mod tests {
 
         assert!(viewers.contains_key("active"));
         assert!(!viewers.contains_key("stale"));
+    }
+
+    #[tokio::test]
+    async fn first_active_viewer_marks_full_refresh_pending() {
+        let state = AppState::new(reqwest::Client::new(), PathBuf::from("test.db"));
+
+        let count = apply_presence_update(
+            &state,
+            PresencePayload {
+                session_id: "viewer-1".to_string(),
+                active: true,
+            },
+        )
+        .await;
+
+        assert_eq!(count, 1);
+        assert!(state.full_refresh_pending.load(Ordering::SeqCst));
     }
 }
