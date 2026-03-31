@@ -1,6 +1,7 @@
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
+use tokio::try_join;
 
 use crate::{
     models::{SnapshotRecord, SourcePrice},
@@ -169,14 +170,25 @@ async fn fetch_gemini(client: &Client) -> Result<SourcePrice, String> {
 pub(crate) async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
+    refresh_all_sources: bool,
 ) -> Result<(), String> {
-    let next_source = UpstreamSource::next_source(
-        latest_snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.refreshed_source.as_deref()),
-    );
-    let refreshed_price = fetch_round_robin_source(&state.client, next_source).await?;
-    let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed_price);
+    let (sources, refreshed_source) = if refresh_all_sources {
+        (
+            fetch_all_sources(&state.client).await?,
+            Some("all".to_string()),
+        )
+    } else {
+        let next_source = UpstreamSource::next_source(
+            latest_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.refreshed_source.as_deref()),
+        );
+        let refreshed_price = fetch_round_robin_source(&state.client, next_source).await?;
+        (
+            merge_snapshot_sources(latest_snapshot.as_ref(), refreshed_price),
+            Some(next_source.name().to_string()),
+        )
+    };
     let (average_price, spread) = summarize_prices(&sources);
 
     let snapshot = SnapshotRecord {
@@ -185,7 +197,7 @@ pub(crate) async fn refresh_snapshot(
         average_price,
         spread,
         warnings: Vec::new(),
-        refreshed_source: Some(next_source.name().to_string()),
+        refreshed_source,
     };
 
     store_snapshot(state.db_path.clone(), snapshot).await
@@ -201,6 +213,17 @@ async fn fetch_round_robin_source(
         UpstreamSource::Kraken => fetch_kraken(client).await,
         UpstreamSource::Gemini => fetch_gemini(client).await,
     }
+}
+
+async fn fetch_all_sources(client: &Client) -> Result<Vec<SourcePrice>, String> {
+    let (coingecko, coinbase, kraken, gemini) = try_join!(
+        fetch_coingecko(client),
+        fetch_coinbase(client),
+        fetch_kraken(client),
+        fetch_gemini(client)
+    )?;
+
+    Ok(vec![coingecko, coinbase, kraken, gemini])
 }
 
 fn merge_snapshot_sources(

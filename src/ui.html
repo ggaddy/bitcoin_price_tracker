@@ -129,7 +129,7 @@
             <div class="value" id="status">Connecting</div>
           </div>
         </div>
-        <p class="note" id="note">Tracking tab presence, rotating upstream checks, and enforcing a 10-second refresh gate.</p>
+        <p class="note" id="note">Tracking tab presence and refreshing BTC/USD pricing while this tab is active.</p>
       </section>
 
       <section class="panel">
@@ -208,13 +208,13 @@
             : "-";
 
           if (data.refresh_succeeded) {
-            noteEl.textContent = "One upstream source price was refreshed and written to SQLite for this cycle.";
+            noteEl.textContent = "Price data refreshed successfully for this cycle.";
           } else if (data.refresh_skipped_reason) {
             noteEl.textContent = data.refresh_skipped_reason;
           } else if (data.stale) {
-            noteEl.textContent = "Serving an older SQLite snapshot because the upstream refresh did not complete.";
+            noteEl.textContent = "Serving older price data because refresh did not complete.";
           } else {
-            noteEl.textContent = "Serving the latest SQLite snapshot.";
+            noteEl.textContent = "Showing the latest stored price data.";
           }
 
           sourcesEl.innerHTML = "";
@@ -238,7 +238,7 @@
         } catch (err) {
           setStatus("OFFLINE", "status-bad");
           avgEl.textContent = "Unavailable";
-          noteEl.textContent = "Dashboard refresh failed before a SQLite snapshot could be loaded.";
+          noteEl.textContent = "Dashboard refresh failed before price data could be loaded.";
           warningsEl.innerHTML = `<li>UI fetch failed: ${String(err)}</li>`;
         }
       }

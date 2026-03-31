@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse},
 };
+use std::sync::atomic::Ordering;
 use tracing::warn;
 
 use crate::{
@@ -62,7 +63,13 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
 
                 if let Some(reason) = refresh_skip_reason(active_viewers, age) {
                     refresh_skipped_reason = Some(reason);
-                } else if let Err(error) = refresh_snapshot(&state, snapshot.clone()).await {
+                } else if let Err(error) = refresh_snapshot(
+                    &state,
+                    snapshot.clone(),
+                    state.full_refresh_pending.swap(false, Ordering::SeqCst),
+                )
+                .await
+                {
                     refresh_error = Some(error);
                 } else {
                     refresh_succeeded = true;
