@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task;
 
 use crate::models::{SnapshotRecord, SourcePrice};
@@ -160,8 +160,20 @@ pub(crate) async fn load_latest_snapshot(
 }
 
 fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, String> {
-    let conn = open_connection(db_path)?;
-    let latest = conn
+    load_latest_snapshot_sync_with_hook(db_path, || {})
+}
+
+// The hook lets tests commit a replacement between the two queries deterministically.
+fn load_latest_snapshot_sync_with_hook(
+    db_path: &Path,
+    after_metadata: impl FnOnce(),
+) -> Result<Option<SnapshotRecord>, String> {
+    let mut conn = open_connection(db_path)?;
+    // Both queries must see the same committed snapshot, even if a writer replaces it.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|error| format!("failed to start SQLite read transaction: {error}"))?;
+    let latest = tx
         .query_row(
             "
             SELECT id, fetched_at_unix, average_price, spread, warnings_json, refreshed_source
@@ -196,10 +208,12 @@ fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, S
         return Ok(None);
     };
 
+    after_metadata();
+
     let warnings = serde_json::from_str::<Vec<String>>(&warnings_json)
         .map_err(|error| format!("failed to decode stored warnings: {error}"))?;
 
-    let mut stmt = conn
+    let mut stmt = tx
         .prepare(
             "
             SELECT source, price_usd
@@ -231,6 +245,10 @@ fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, S
     for row in rows {
         sources.push(row.map_err(|error| format!("failed to decode stored source row: {error}"))?);
     }
+
+    drop(stmt);
+    tx.commit()
+        .map_err(|error| format!("failed to finish SQLite read transaction: {error}"))?;
 
     Ok(Some(SnapshotRecord {
         fetched_at_unix,
@@ -276,7 +294,10 @@ mod tests {
 
     use crate::models::{SnapshotRecord, SourcePrice};
 
-    use super::{init_db_sync, load_latest_snapshot_sync, open_connection, store_snapshot_sync};
+    use super::{
+        init_db_sync, load_latest_snapshot_sync, load_latest_snapshot_sync_with_hook,
+        open_connection, store_snapshot_sync,
+    };
 
     fn temp_db_path(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -301,6 +322,117 @@ mod tests {
     }
 
     #[test]
+    fn load_snapshot_stays_consistent_when_replaced_between_queries() {
+        let db_path = temp_db_path("consistent-read");
+        init_db_sync(&db_path).unwrap();
+        let conn = open_connection(&db_path).unwrap();
+        // Allow the writer to commit while a reader holds its snapshot open.
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+
+        store_snapshot_sync(&db_path, snapshot_for_test(10)).unwrap();
+
+        let snapshot = load_latest_snapshot_sync_with_hook(&db_path, || {
+            store_snapshot_sync(&db_path, snapshot_for_test(20)).unwrap();
+            let committed = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+            assert_eq!(committed.fetched_at_unix, 20);
+            assert_eq!(committed.sources[0].price_usd, 100_020.0);
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(snapshot.fetched_at_unix, 10);
+        assert_eq!(snapshot.average_price, Some(100_010.0));
+        assert_eq!(snapshot.spread, Some(0.0));
+        assert!(snapshot.warnings.is_empty());
+        assert_eq!(snapshot.refreshed_source.as_deref(), Some("CoinGecko"));
+        assert_eq!(snapshot.sources.len(), 1);
+        assert_eq!(snapshot.sources[0].source, "CoinGecko");
+        assert_eq!(snapshot.sources[0].price_usd, 100_010.0);
+
+        drop(conn);
+        fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn load_empty_database_returns_none_and_allows_subsequent_write() {
+        let db_path = temp_db_path("empty-read");
+        init_db_sync(&db_path).unwrap();
+
+        assert!(load_latest_snapshot_sync(&db_path).unwrap().is_none());
+        store_snapshot_sync(&db_path, snapshot_for_test(10)).unwrap();
+        let snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+        assert_eq!(snapshot.fetched_at_unix, 10);
+        assert_eq!(snapshot.sources.len(), 1);
+        assert_eq!(snapshot.sources[0].price_usd, 100_010.0);
+
+        fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn failed_source_insert_preserves_previous_snapshot_and_source_rows() {
+        let db_path = temp_db_path("rollback");
+        init_db_sync(&db_path).unwrap();
+        let mut original = snapshot_for_test(10);
+        original.warnings = vec!["retained warning".to_string()];
+        store_snapshot_sync(&db_path, original).unwrap();
+
+        let conn = open_connection(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_coinbase_insert
+             BEFORE INSERT ON source_prices
+             WHEN NEW.source = 'Coinbase'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced source insert failure');
+             END;",
+        )
+        .unwrap();
+
+        let mut replacement = snapshot_for_test(20);
+        replacement.sources.push(SourcePrice {
+            source: "Coinbase".to_string(),
+            price_usd: 100_040.0,
+        });
+        replacement.average_price = Some(100_030.0);
+        replacement.spread = Some(20.0);
+        replacement.refreshed_source = Some("Coinbase".to_string());
+        // The first source inserts successfully; the second forces the entire write to roll back.
+        let error = store_snapshot_sync(&db_path, replacement.clone()).unwrap_err();
+        assert!(error.contains("forced source insert failure"), "{error}");
+
+        let snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+        assert_eq!(snapshot.fetched_at_unix, 10);
+        assert_eq!(snapshot.average_price, Some(100_010.0));
+        assert_eq!(snapshot.spread, Some(0.0));
+        assert_eq!(snapshot.warnings, vec!["retained warning".to_string()]);
+        assert_eq!(snapshot.refreshed_source.as_deref(), Some("CoinGecko"));
+        assert_eq!(snapshot.sources.len(), 1);
+        assert_eq!(snapshot.sources[0].source, "CoinGecko");
+        assert_eq!(snapshot.sources[0].price_usd, 100_010.0);
+        let counts: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM price_snapshots),
+                        (SELECT COUNT(*) FROM source_prices)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 1));
+
+        conn.execute_batch("DROP TRIGGER fail_coinbase_insert;")
+            .unwrap();
+        store_snapshot_sync(&db_path, replacement).unwrap();
+        let recovered = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+        assert_eq!(recovered.fetched_at_unix, 20);
+        assert_eq!(recovered.sources.len(), 2);
+
+        drop(conn);
+        fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
     fn store_snapshot_replaces_previous_snapshot_and_source_rows() {
         let db_path = temp_db_path("latest-only");
         init_db_sync(&db_path).unwrap();
@@ -312,12 +444,12 @@ mod tests {
                 fetched_at_unix: 20,
                 sources: vec![
                     SourcePrice {
-                        source: "CoinGecko".to_string(),
-                        price_usd: 200_000.0,
-                    },
-                    SourcePrice {
                         source: "Coinbase".to_string(),
                         price_usd: 200_100.0,
+                    },
+                    SourcePrice {
+                        source: "CoinGecko".to_string(),
+                        price_usd: 200_000.0,
                     },
                 ],
                 average_price: Some(200_050.0),
@@ -341,6 +473,10 @@ mod tests {
         assert_eq!(source_count, 2);
         assert_eq!(latest_snapshot.fetched_at_unix, 20);
         assert_eq!(latest_snapshot.sources.len(), 2);
+        assert_eq!(latest_snapshot.sources[0].source, "CoinGecko");
+        assert_eq!(latest_snapshot.sources[0].price_usd, 200_000.0);
+        assert_eq!(latest_snapshot.sources[1].source, "Coinbase");
+        assert_eq!(latest_snapshot.sources[1].price_usd, 200_100.0);
         assert_eq!(latest_snapshot.average_price, Some(200_050.0));
         assert_eq!(latest_snapshot.spread, Some(100.0));
         assert_eq!(latest_snapshot.warnings, vec!["rate limited".to_string()]);
