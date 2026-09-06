@@ -1,17 +1,17 @@
 **Project audit and improvement plan — September 6, 2026**
 
-Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is implemented and verified in the working tree; no implementation commit has been created yet.
+Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b`; P2.1 is implemented and verified, with evidence recorded below.
 
 The project is a compact Rust/Axum application with a self-contained dashboard, four upstream providers, and SQLite persistence. Its module boundaries are reasonable for its size. The most valuable improvements concern refresh reliability and the accuracy of the data shown to users.
 
 **Implementation progress — updated September 6, 2026**
 
-Audit and implementation planning are complete. Implementation: **4 of 30 tasks complete**. Next task: **P2.1 — add deterministic provider and clock test seams**.
+Audit and implementation planning are complete. Implementation: **5 of 30 tasks complete**. Next task: **P2.2 — bound network work and introduce structured provider errors**.
 
 | Phase | Status | Tasks complete | Depends on | Completion evidence |
 | --- | --- | --- | --- | --- |
 | P1 — Consistent SQLite reads | Complete | 4/4 | None | Race reproduced before the fix; all 5 storage tests pass; full suite 10 passed / 1 ignored; formatting and Clippy pass |
-| P2 — Refresh reliability | Not started | 0/7 | P1 | — |
+| P2 — Refresh reliability | In progress | 1/7 | P1 | P2.1 complete: local provider fixtures and manual clock; full suite 15 passed / 1 ignored; formatting and Clippy pass |
 | P3 — Source freshness and validation | Not started | 0/6 | P2 | — |
 | P4 — Dashboard resilience | Not started | 0/6 | P3 for freshness display; lifecycle work can start earlier | — |
 | P5 — Delivery and deployment | Not started | 0/7 | Final verification depends on P1–P4; CI can start with P1 | — |
@@ -99,13 +99,23 @@ P1 implementation evidence (September 6, 2026):
 
 Files: `src/config.rs`, `src/state.rs`, `src/main.rs`, `src/handlers.rs`, `src/presence.rs`, `src/pricing.rs`, `src/util.rs`, and `Cargo.toml`. Add a small `src/refresh.rs` if separating orchestration from provider parsing makes the code easier to follow.
 
-- [ ] **P2.1 — Add deterministic test seams.** Inject provider endpoints and a clock through application construction. Use fixed production HTTPS endpoints and local mock HTTP servers in tests; endpoints must not come from public request input. Add only the test dependencies/features needed for controlled delays, time advancement, and HTTP route tests. Record upstream request counts.
+- [x] **P2.1 — Add deterministic test seams.** Inject provider endpoints and a clock through application construction. Use fixed production HTTPS endpoints and local mock HTTP servers in tests; endpoints must not come from public request input. Add only the test dependencies/features needed for controlled delays, time advancement, and HTTP route tests. Record upstream request counts.
 - [ ] **P2.2 — Bound network work.** Configure connect and total timeouts in the shared HTTP client. Introduce a provider error type that distinguishes transport/timeout, HTTP status and retry timing, invalid payload, and invalid price; retain useful diagnostics for logs without exposing internal database paths to clients.
 - [ ] **P2.3 — Introduce explicit refresh coordination.** Replace success-only scheduling with coordinator state for rotation, attempt timing, and provider retry eligibility. Use `try_lock` or equivalent ownership so another request cannot queue behind upstream work. On contention, return the database snapshot with a refresh-in-progress reason. Capture the pending full-refresh generation so completing an older batch cannot clear a newer activation. Derive response viewer counts from current presence after work completes.
 - [ ] **P2.4 — Keep partial successes.** Replace fail-fast all-provider joining with collection of each provider's result. Merge successes with retained quotes and record failures individually. Advance the cursor after an attempted provider even on failure. Keep the previous quote snapshot intact if no provider succeeds; a database failure must not count as a successful refresh or remove attempt cooldowns.
 - [ ] **P2.5 — Apply cadence and retry policy.** Implement both global gates and per-provider eligibility from the contract. Skip cooling-down providers when selecting the next source; do not consume an attempt when none are eligible. Parse supported `Retry-After` forms defensively, never retry in a tight loop, and reset failure counts after successful recovery. Keep attempt/retry state in memory; P3 adds persisted health for display.
 - [ ] **P2.6 — Correct presence timing.** Use monotonic timestamps for heartbeats and expiry. Recheck presence before upstream dispatch and keep the viewer-map critical section short. Define consistent lock ordering so presence updates cannot deadlock with refresh coordination. Validate at the exact TTL boundary and after hide/show transitions.
 - [ ] **P2.7 — Verify the failure matrix.** Add route/coordinator tests for cold start, partial and total provider failure, timeout, rate limiting, retry expiry, rotation after failure, database write failure, concurrent callers, fresh data after restart, and zero viewers. Use barriers to prove a cached response completes while an upstream request remains deliberately stalled. Assert that failures do not increase attempt frequency with viewer count, and that a new activation during a batch remains pending.
+
+P2.1 implementation evidence (September 6, 2026):
+
+- Added `UpstreamEndpoints` in `src/config.rs`, a `Clock` interface with `SystemClock` in `src/util.rs`, and `AppState::with_dependencies` in `src/state.rs`. Normal startup still uses the same fixed HTTPS provider URLs and system time. Endpoint overrides are constructor inputs only, never public request parameters. Provider requests, snapshot timestamps, snapshot ages, and presence expiry now use the injected dependencies.
+- Added `src/test_support.rs` with four local Axum provider routes, per-provider request counters, configurable response status/headers/body, semaphore-controlled response release, a manually advanced clock, and isolated temporary SQLite databases. Test applications exercise the real router through Tower; provider adapters use real HTTP against loopback endpoints. Fixture servers and database directories have scoped cleanup. Real test deadlines bound hangs; time-boundary assertions advance the injected clock without sleeps.
+- Added four route tests in `src/api_tests.rs`: `no_viewers_never_request_upstreams`, `local_providers_and_manual_time_drive_refresh_and_cache_age`, `manual_time_expires_presence_without_sleeping`, and `held_provider_response_uses_time_at_completion`. They verify all four provider parsers, stored prices, request counts, the nine/ten-second refresh boundary, the 15/16-second viewer-expiry boundary, and completion timestamps after a held response.
+- Added `pricing::tests::provider_fixtures_support_http_errors_malformed_json_and_recovery` to exercise an HTTP 429 fixture, malformed JSON, and a subsequent valid response directly through the provider adapter. This test does not require retaining the current fail-fast batch or retry behavior, which later P2 tasks will change.
+- Added Tower's `util` feature as a direct development dependency, reusing the already locked version. Declared Tokio `net` and `sync` features explicitly. `Cargo.lock` changes only to record the direct Tower dependency; no package versions changed.
+- Final checks ran in an ephemeral Rust 1.85.1 container with current `src` and `Cargo.toml` mounted read-only: `cargo fmt --all -- --check` passed; `cargo clippy --locked --release --all-targets -- -D warnings` passed; `cargo test --locked --release`: **15 passed, 0 failed, 1 ignored**. `git diff --check` passed on the host. No public provider requests were needed; the Selenium test was not run.
+- This task preserves existing production scheduling and clock semantics. Production network deadlines belong to P2.2, nonblocking refresh coordination to P2.3, and monotonic presence timing to P2.6. P2 remains in progress.
 
 **P3 — Per-source freshness and validated prices (6 tasks)**
 
@@ -164,6 +174,8 @@ Append one row per completed task or material decision. Keep historical baseline
 | 2026-09-06 | P1.2 | Added a deferred read transaction; regression now returns the complete original snapshot | All 5 storage tests pass; changes in `src/storage.rs` | P1.3: confirm rollback and retention |
 | 2026-09-06 | P1.3 | Added partial-insert rollback and empty-read tests; strengthened source-order assertions | Rollback retains original metadata and source rows; later replacement succeeds; pruning test passes | P1.4: complete phase checks |
 | 2026-09-06 | P1.4 | Completed P1 validation and updated progress to 4/30 | Rust 1.85.1: full suite 10 passed / 1 ignored, formatting, Clippy, and diff checks pass; working-tree changes, not committed | P2.1: add provider/clock test seams |
+| 2026-09-06 | P1 commit recorded | P1 changes and tracker committed | `9bce95b` (`p1 complete`) | Continue P2.1 |
+| 2026-09-06 | P2.1 | Injected endpoints/time; added local HTTP fixtures, manual time advancement, response gates, request counters, and five tests; progress 5/30 | Rust 1.85.1: full suite 15 passed / 1 ignored; formatting, Clippy, and diff checks pass | P2.2: add production deadlines and structured provider errors |
 
 **Baseline validation performed — September 6, 2026**
 

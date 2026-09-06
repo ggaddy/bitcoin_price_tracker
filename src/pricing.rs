@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use tokio::try_join;
 
 use crate::{
+    config::UpstreamEndpoints,
     models::{SnapshotRecord, SourcePrice},
     state::AppState,
     storage::store_snapshot,
-    util::now_unix,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,9 +53,9 @@ impl UpstreamSource {
     }
 }
 
-async fn fetch_coingecko(client: &Client) -> Result<SourcePrice, String> {
+async fn fetch_coingecko(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
     let value: Value = client
-        .get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+        .get(endpoint)
         .send()
         .await
         .map_err(|error| format!("CoinGecko request failed: {error}"))?
@@ -77,9 +77,9 @@ async fn fetch_coingecko(client: &Client) -> Result<SourcePrice, String> {
     })
 }
 
-async fn fetch_coinbase(client: &Client) -> Result<SourcePrice, String> {
+async fn fetch_coinbase(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
     let value: Value = client
-        .get("https://api.coinbase.com/v2/prices/spot?currency=USD")
+        .get(endpoint)
         .send()
         .await
         .map_err(|error| format!("Coinbase request failed: {error}"))?
@@ -105,9 +105,9 @@ async fn fetch_coinbase(client: &Client) -> Result<SourcePrice, String> {
     })
 }
 
-async fn fetch_kraken(client: &Client) -> Result<SourcePrice, String> {
+async fn fetch_kraken(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
     let value: Value = client
-        .get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD")
+        .get(endpoint)
         .send()
         .await
         .map_err(|error| format!("Kraken request failed: {error}"))?
@@ -140,9 +140,9 @@ async fn fetch_kraken(client: &Client) -> Result<SourcePrice, String> {
     })
 }
 
-async fn fetch_gemini(client: &Client) -> Result<SourcePrice, String> {
+async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
     let value: Value = client
-        .get("https://api.gemini.com/v2/ticker/btcusd")
+        .get(endpoint)
         .send()
         .await
         .map_err(|error| format!("Gemini request failed: {error}"))?
@@ -174,7 +174,7 @@ pub(crate) async fn refresh_snapshot(
 ) -> Result<(), String> {
     let (sources, refreshed_source) = if refresh_all_sources {
         (
-            fetch_all_sources(&state.client).await?,
+            fetch_all_sources(&state.client, &state.endpoints).await?,
             Some("all".to_string()),
         )
     } else {
@@ -183,7 +183,8 @@ pub(crate) async fn refresh_snapshot(
                 .as_ref()
                 .and_then(|snapshot| snapshot.refreshed_source.as_deref()),
         );
-        let refreshed_price = fetch_round_robin_source(&state.client, next_source).await?;
+        let refreshed_price =
+            fetch_round_robin_source(&state.client, &state.endpoints, next_source).await?;
         (
             merge_snapshot_sources(latest_snapshot.as_ref(), refreshed_price),
             Some(next_source.name().to_string()),
@@ -192,7 +193,7 @@ pub(crate) async fn refresh_snapshot(
     let (average_price, spread) = summarize_prices(&sources);
 
     let snapshot = SnapshotRecord {
-        fetched_at_unix: now_unix(),
+        fetched_at_unix: state.clock.now_unix(),
         sources,
         average_price,
         spread,
@@ -205,22 +206,26 @@ pub(crate) async fn refresh_snapshot(
 
 async fn fetch_round_robin_source(
     client: &Client,
+    endpoints: &UpstreamEndpoints,
     source: UpstreamSource,
 ) -> Result<SourcePrice, String> {
     match source {
-        UpstreamSource::CoinGecko => fetch_coingecko(client).await,
-        UpstreamSource::Coinbase => fetch_coinbase(client).await,
-        UpstreamSource::Kraken => fetch_kraken(client).await,
-        UpstreamSource::Gemini => fetch_gemini(client).await,
+        UpstreamSource::CoinGecko => fetch_coingecko(client, &endpoints.coingecko).await,
+        UpstreamSource::Coinbase => fetch_coinbase(client, &endpoints.coinbase).await,
+        UpstreamSource::Kraken => fetch_kraken(client, &endpoints.kraken).await,
+        UpstreamSource::Gemini => fetch_gemini(client, &endpoints.gemini).await,
     }
 }
 
-async fn fetch_all_sources(client: &Client) -> Result<Vec<SourcePrice>, String> {
+async fn fetch_all_sources(
+    client: &Client,
+    endpoints: &UpstreamEndpoints,
+) -> Result<Vec<SourcePrice>, String> {
     let (coingecko, coinbase, kraken, gemini) = try_join!(
-        fetch_coingecko(client),
-        fetch_coinbase(client),
-        fetch_kraken(client),
-        fetch_gemini(client)
+        fetch_coingecko(client, &endpoints.coingecko),
+        fetch_coinbase(client, &endpoints.coinbase),
+        fetch_kraken(client, &endpoints.kraken),
+        fetch_gemini(client, &endpoints.gemini)
     )?;
 
     Ok(vec![coingecko, coinbase, kraken, gemini])
@@ -285,7 +290,49 @@ fn summarize_prices(sources: &[SourcePrice]) -> (Option<f64>, Option<f64>) {
 
 #[cfg(test)]
 mod tests {
-    use super::UpstreamSource;
+    use axum::http::{HeaderValue, StatusCode, header};
+    use serde_json::json;
+
+    use super::{UpstreamSource, fetch_round_robin_source};
+    use crate::test_support::{FixtureResponse, TestApp};
+
+    #[tokio::test]
+    async fn provider_fixtures_support_http_errors_malformed_json_and_recovery() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+        let fetch = || {
+            fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::CoinGecko,
+            )
+        };
+        let mut limited = FixtureResponse::json(json!({"error": "rate limited"}));
+        limited.status = StatusCode::TOO_MANY_REQUESTS;
+        limited
+            .headers
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("20"));
+        provider.set_response(limited);
+
+        let error = fetch().await.err().expect("expected an HTTP error");
+        assert!(error.contains("429"), "{error}");
+        assert_eq!(provider.request_count(), 1);
+
+        let mut malformed = FixtureResponse::json(json!(null));
+        malformed.body = "not json".to_string();
+        provider.set_response(malformed);
+        let error = fetch().await.err().expect("expected a JSON error");
+        assert!(error.contains("CoinGecko parse failed"), "{error}");
+        assert_eq!(provider.request_count(), 2);
+
+        provider.set_response(FixtureResponse::json(
+            json!({"bitcoin": {"usd": 101_000.0}}),
+        ));
+        let recovered = fetch().await.unwrap();
+        assert_eq!(recovered.source, "CoinGecko");
+        assert_eq!(recovered.price_usd, 101_000.0);
+        assert_eq!(provider.request_count(), 3);
+    }
 
     #[test]
     fn upstream_sources_rotate_in_round_robin_order() {

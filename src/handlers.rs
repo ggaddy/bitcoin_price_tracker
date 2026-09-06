@@ -18,7 +18,6 @@ use crate::{
     state::AppState,
     storage::load_latest_snapshot,
     ui::INDEX_HTML,
-    util::now_unix,
 };
 
 pub(crate) async fn index() -> Html<&'static str> {
@@ -53,7 +52,7 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
         );
     } else {
         let _guard = state.refresh_lock.lock().await;
-        let now = now_unix();
+        let now = state.clock.now_unix();
 
         match load_latest_snapshot(state.db_path.clone()).await {
             Ok(snapshot) => {
@@ -81,7 +80,7 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
         }
     }
 
-    let response_now = now_unix();
+    let response_now = state.clock.now_unix();
     match load_latest_snapshot(state.db_path.clone()).await {
         Ok(Some(snapshot)) => {
             let fetched_age_seconds = snapshot_age_seconds(&snapshot, response_now);

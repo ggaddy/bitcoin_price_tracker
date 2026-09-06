@@ -5,11 +5,10 @@ use crate::{
     config::{REFRESH_INTERVAL_SECONDS, VIEWER_TTL_SECONDS},
     models::{PresencePayload, SnapshotRecord},
     state::AppState,
-    util::now_unix,
 };
 
 pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePayload) -> usize {
-    let now = now_unix();
+    let now = state.clock.now_unix();
     let mut viewers = state.viewers.lock().await;
     prune_inactive_viewers(&mut viewers, now);
     let previously_empty = viewers.is_empty();
@@ -28,7 +27,7 @@ pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePay
 }
 
 pub(crate) async fn active_viewer_count(state: &AppState) -> usize {
-    let now = now_unix();
+    let now = state.clock.now_unix();
     let mut viewers = state.viewers.lock().await;
     prune_inactive_viewers(&mut viewers, now);
     viewers.len()
