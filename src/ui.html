@@ -142,7 +142,7 @@
 
     <script>
       const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-      const formatPrice = (value) => fmt.format(value).replace(/,/g, " ");
+      const formatPrice = (value) => fmt.format(value).replace(/,/g, "\u2009");
       const avgEl = document.getElementById("avg");
       const spreadEl = document.getElementById("spread");
       const updatedEl = document.getElementById("updated");
