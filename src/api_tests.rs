@@ -12,6 +12,169 @@ use crate::{
 };
 
 #[tokio::test]
+async fn cached_callers_finish_while_one_refresh_is_stalled() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    provider.wait_for_request().await;
+    let release = provider.hold_responses();
+    app.clock.advance(Duration::from_secs(10));
+
+    let owner = app.price();
+    tokio::pin!(owner);
+    tokio::select! {
+        _ = provider.wait_for_request() => {}
+        _ = &mut owner => panic!("refresh completed while the provider was held"),
+    }
+    let readers = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(app.price(), app.price(), app.price())
+    })
+    .await
+    .expect("cached readers did not wait for the provider");
+    for (status, data) in [readers.0, readers.1, readers.2] {
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(data["average_price"], 100_150.0);
+        assert_eq!(data["fetched_at_unix"], TEST_NOW);
+        assert_eq!(data["refresh_succeeded"], false);
+        assert!(
+            data["refresh_skipped_reason"]
+                .as_str()
+                .unwrap()
+                .contains("in progress")
+        );
+    }
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
+    // Presence remains responsive, and the owner's response reflects the departure.
+    app.presence(false).await;
+    release.add_permits(1);
+    let (_, completed) = owner.await;
+    assert_eq!(completed["refresh_succeeded"], true);
+    assert_eq!(completed["active_viewers"], 0);
+}
+
+#[tokio::test]
+async fn concurrent_cold_start_returns_unavailable_without_waiting() {
+    let app = TestApp::new().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    app.presence(true).await;
+    let owner = app.price();
+    tokio::pin!(owner);
+    tokio::select! {
+        _ = provider.wait_for_request() => {}
+        _ = &mut owner => panic!("refresh completed before release"),
+    }
+    let (status, data) = tokio::time::timeout(Duration::from_secs(1), app.price())
+        .await
+        .expect("cold reader completed while refresh remained held");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(data["sources"], json!([]));
+    assert!(
+        data["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("in progress")
+    );
+    release.add_permits(1);
+    assert_eq!(owner.await.0, StatusCode::OK);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn activation_during_batch_survives_completion_and_freshness_gate() {
+    let app = TestApp::new().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    app.presence(true).await;
+    let owner = app.price();
+    tokio::pin!(owner);
+    tokio::select! {
+        _ = provider.wait_for_request() => {}
+        _ = &mut owner => panic!("refresh completed before release"),
+    }
+    app.presence(false).await;
+    app.presence(true).await;
+    release.add_permits(1);
+    assert_eq!(owner.await.0, StatusCode::OK);
+    assert_eq!(app.price().await.1["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+    app.clock.advance(Duration::from_secs(10));
+    release.add_permits(1);
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+    app.presence(true).await;
+    app.clock.advance(Duration::from_secs(10));
+    release.add_permits(1);
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    assert_eq!(app.upstreams.request_counts(), [3, 2, 2, 2]);
+}
+
+#[tokio::test]
+async fn failed_attempt_observes_cadence_and_advances_rotation() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(crate::test_support::FixtureResponse::json(json!({})));
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(true).await;
+    assert_eq!(app.price().await.1["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
+    app.clock.advance(Duration::from_secs(9));
+    let (_, cached) = app.price().await;
+    assert!(
+        cached["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("last attempt")
+    );
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
+    app.clock.advance(Duration::from_secs(1));
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    assert_eq!(app.upstreams.request_counts(), [2, 2, 1, 1]);
+}
+
+#[tokio::test]
+async fn cancelling_refresh_releases_ownership_and_retains_attempt_gate() {
+    let app = TestApp::new().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    app.presence(true).await;
+    {
+        let owner = app.price();
+        tokio::pin!(owner);
+        tokio::select! {
+            _ = provider.wait_for_request() => {}
+            _ = &mut owner => panic!("refresh completed before release"),
+        }
+        for source in [
+            UpstreamSource::Coinbase,
+            UpstreamSource::Kraken,
+            UpstreamSource::Gemini,
+        ] {
+            app.upstreams.provider(source).wait_for_request().await;
+        }
+    }
+    assert!(app.state.refresh.try_lock().is_ok());
+    let (_, data) = app.price().await;
+    assert!(
+        data["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("last attempt")
+    );
+    let counts = app.upstreams.request_counts();
+    app.clock.advance(Duration::from_secs(10));
+    release.add_permits(2);
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    for (before, after) in counts.into_iter().zip(app.upstreams.request_counts()) {
+        assert_eq!(after, before + 1);
+    }
+}
+
+#[tokio::test]
 async fn timed_out_refresh_serves_the_previous_snapshot_and_releases_the_lock() {
     let app = TestApp::new().await;
     app.presence(true).await;
@@ -42,7 +205,7 @@ async fn timed_out_refresh_serves_the_previous_snapshot_and_releases_the_lock() 
             .to_string()
             .contains("CoinGecko request timed out")
     );
-    assert!(app.state.refresh_lock.try_lock().is_ok());
+    assert!(app.state.refresh.try_lock().is_ok());
 }
 
 #[tokio::test]
@@ -69,6 +232,15 @@ async fn storage_failure_warnings_hide_internal_details() {
     );
     assert!(!data.to_string().contains("/private/fixture.db"));
     assert!(!data.to_string().contains("private error"));
+    let counts = app.upstreams.request_counts();
+    let (_, cached) = app.price().await;
+    assert!(
+        cached["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("last attempt")
+    );
+    assert_eq!(app.upstreams.request_counts(), counts);
 }
 
 #[tokio::test]

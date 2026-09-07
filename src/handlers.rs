@@ -50,29 +50,34 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
             "Refresh skipped: no active viewers are currently tracked. Open the dashboard tab to resume updates."
                 .to_string(),
         );
-    } else {
-        let _guard = state.refresh_lock.lock().await;
-        let now = state.clock.now_unix();
-
+    } else if let Ok(mut coordinator) = state.refresh.try_lock() {
         match load_latest_snapshot(state.db_path.clone()).await {
             Ok(snapshot) => {
                 let age = snapshot
                     .as_ref()
-                    .and_then(|record| snapshot_age_seconds(record, now));
+                    .and_then(|record| snapshot_age_seconds(record, state.clock.now_unix()));
 
-                if let Some(reason) = refresh_skip_reason(active_viewers, age) {
+                // The viewer lock is released before any provider I/O. Presence
+                // never acquires the coordinator, so it can progress during a refresh.
+                let current_viewers = active_viewer_count(&state).await;
+                if let Some(reason) = refresh_skip_reason(current_viewers, age) {
                     refresh_skipped_reason = Some(reason);
-                } else if let Err(error) = refresh_snapshot(
-                    &state,
-                    snapshot.clone(),
-                    state.full_refresh_pending.swap(false, Ordering::SeqCst),
-                )
-                .await
-                {
-                    warn!(error = ?error, "price refresh failed");
-                    refresh_error = Some(error.to_string());
                 } else {
-                    refresh_succeeded = true;
+                    let generation = state.full_refresh_generation.load(Ordering::SeqCst);
+                    match coordinator.begin(state.clock.now_monotonic(), generation) {
+                        Ok(plan) => {
+                            let result = refresh_snapshot(&state, snapshot, &plan).await;
+                            coordinator.complete(&plan);
+                            match result {
+                                Ok(()) => refresh_succeeded = true,
+                                Err(error) => {
+                                    warn!(error = ?error, "price refresh failed");
+                                    refresh_error = Some(error.to_string());
+                                }
+                            }
+                        }
+                        Err(reason) => refresh_skipped_reason = Some(reason.to_string()),
+                    }
                 }
             }
             Err(error) => {
@@ -81,10 +86,15 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                     Some("Failed to inspect stored price data before refresh".to_string());
             }
         }
+    } else {
+        refresh_skipped_reason =
+            Some("Refresh skipped: another refresh is in progress.".to_string());
     }
 
+    let stored_snapshot = load_latest_snapshot(state.db_path.clone()).await;
+    let active_viewers = active_viewer_count(&state).await;
     let response_now = state.clock.now_unix();
-    match load_latest_snapshot(state.db_path.clone()).await {
+    match stored_snapshot {
         Ok(Some(snapshot)) => {
             let fetched_age_seconds = snapshot_age_seconds(&snapshot, response_now);
             let stale = fetched_age_seconds

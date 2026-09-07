@@ -7,6 +7,7 @@ use crate::{
     config::UpstreamEndpoints,
     errors::{ProviderError, ProviderErrorKind, RefreshError, RetryAfter},
     models::{SnapshotRecord, SourcePrice},
+    refresh::RefreshPlan,
     state::AppState,
     storage::store_snapshot,
 };
@@ -20,7 +21,7 @@ pub(crate) enum UpstreamSource {
 }
 
 impl UpstreamSource {
-    const ALL: [Self; 4] = [Self::CoinGecko, Self::Coinbase, Self::Kraken, Self::Gemini];
+    pub(crate) const ALL: [Self; 4] = [Self::CoinGecko, Self::Coinbase, Self::Kraken, Self::Gemini];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -29,28 +30,6 @@ impl UpstreamSource {
             Self::Kraken => "Kraken",
             Self::Gemini => "Gemini",
         }
-    }
-
-    fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "CoinGecko" => Some(Self::CoinGecko),
-            "Coinbase" => Some(Self::Coinbase),
-            "Kraken" => Some(Self::Kraken),
-            "Gemini" => Some(Self::Gemini),
-            _ => None,
-        }
-    }
-
-    fn next_source(last_refreshed_source: Option<&str>) -> Self {
-        let Some(last_source) = last_refreshed_source.and_then(Self::from_name) else {
-            return Self::ALL[0];
-        };
-
-        let Some(index) = Self::ALL.iter().position(|source| *source == last_source) else {
-            return Self::ALL[0];
-        };
-
-        Self::ALL[(index + 1) % Self::ALL.len()]
     }
 }
 
@@ -180,24 +159,18 @@ async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, Pr
 pub(crate) async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
-    refresh_all_sources: bool,
+    plan: &RefreshPlan,
 ) -> Result<(), RefreshError> {
-    let (sources, refreshed_source) = if refresh_all_sources {
-        (
-            fetch_all_sources(&state.client, &state.endpoints).await?,
-            Some("all".to_string()),
-        )
+    let refreshed = fetch_selected_sources(&state.client, &state.endpoints, &plan.sources).await?;
+    let (sources, refreshed_source) = if plan.full_refresh {
+        (refreshed, Some("all".to_string()))
     } else {
-        let next_source = UpstreamSource::next_source(
-            latest_snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.refreshed_source.as_deref()),
-        );
-        let refreshed_price =
-            fetch_round_robin_source(&state.client, &state.endpoints, next_source).await?;
         (
-            merge_snapshot_sources(latest_snapshot.as_ref(), refreshed_price),
-            Some(next_source.name().to_string()),
+            merge_snapshot_sources(
+                latest_snapshot.as_ref(),
+                refreshed.into_iter().next().unwrap(),
+            ),
+            Some(plan.sources[0].name().to_string()),
         )
     };
     let (average_price, spread) = summarize_prices(&sources);
@@ -229,18 +202,30 @@ async fn fetch_round_robin_source(
     }
 }
 
-async fn fetch_all_sources(
+async fn fetch_selected_sources(
     client: &Client,
     endpoints: &UpstreamEndpoints,
+    sources: &[UpstreamSource],
 ) -> Result<Vec<SourcePrice>, ProviderError> {
+    let fetch = |source| async move {
+        if sources.contains(&source) {
+            fetch_round_robin_source(client, endpoints, source)
+                .await
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    };
     let (coingecko, coinbase, kraken, gemini) = try_join!(
-        fetch_coingecko(client, &endpoints.coingecko),
-        fetch_coinbase(client, &endpoints.coinbase),
-        fetch_kraken(client, &endpoints.kraken),
-        fetch_gemini(client, &endpoints.gemini)
+        fetch(UpstreamSource::CoinGecko),
+        fetch(UpstreamSource::Coinbase),
+        fetch(UpstreamSource::Kraken),
+        fetch(UpstreamSource::Gemini)
     )?;
-
-    Ok(vec![coingecko, coinbase, kraken, gemini])
+    Ok([coingecko, coinbase, kraken, gemini]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 fn merge_snapshot_sources(
@@ -545,26 +530,5 @@ mod tests {
                 "{error:?}"
             );
         }
-    }
-
-    #[test]
-    fn upstream_sources_rotate_in_round_robin_order() {
-        assert_eq!(UpstreamSource::next_source(None), UpstreamSource::CoinGecko);
-        assert_eq!(
-            UpstreamSource::next_source(Some("CoinGecko")),
-            UpstreamSource::Coinbase
-        );
-        assert_eq!(
-            UpstreamSource::next_source(Some("Coinbase")),
-            UpstreamSource::Kraken
-        );
-        assert_eq!(
-            UpstreamSource::next_source(Some("Kraken")),
-            UpstreamSource::Gemini
-        );
-        assert_eq!(
-            UpstreamSource::next_source(Some("Gemini")),
-            UpstreamSource::CoinGecko
-        );
     }
 }

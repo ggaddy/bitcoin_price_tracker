@@ -1,12 +1,17 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) trait Clock: Send + Sync {
     fn now_unix(&self) -> i64;
+    fn now_monotonic(&self) -> Instant;
 }
 
 pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
+    fn now_monotonic(&self) -> Instant {
+        Instant::now()
+    }
+
     fn now_unix(&self) -> i64 {
         now_unix()
     }

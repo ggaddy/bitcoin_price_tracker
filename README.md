@@ -8,8 +8,10 @@ Rust BTC/USD tracker with a terminal-style UI.
 - Stores prices in local SQLite
 - Serves the latest stored snapshot to the UI
 - Refreshes only while a visible tab is active
-- Rotates upstream checks one source at a time
-- Skips refreshes when the latest snapshot is under 10 seconds old
+- Rotates upstream checks one source at a time, advancing after failed attempts too
+- Skips refreshes when the latest snapshot is under 10 seconds old or the previous attempt started less than 10 seconds ago
+- Serves stored prices while another request refreshes; concurrent cold-start requests receive 503 until a snapshot is available
+- Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
 - Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
 - Requires finite, positive prices; serves the previous snapshot when a refresh fails and stored data is available
 

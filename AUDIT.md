@@ -1,17 +1,17 @@
 **Project audit and improvement plan — September 6, 2026**
 
-Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is implemented and verified in the working tree, not yet committed.
+Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is committed as `0fdc65f`. P2.3 is implemented and verified in the working tree, not yet committed.
 
 The project is a compact Rust/Axum application with a self-contained dashboard, four upstream providers, and SQLite persistence. Its module boundaries are reasonable for its size. The most valuable improvements concern refresh reliability and the accuracy of the data shown to users.
 
 **Implementation progress — updated September 6, 2026**
 
-Audit and implementation planning are complete. Implementation: **6 of 30 tasks complete**. Next task: **P2.3 — introduce explicit refresh coordination**.
+Audit and implementation planning are complete. Implementation: **7 of 30 tasks complete**. Next task: **P2.4 — keep partial successes**.
 
 | Phase | Status | Tasks complete | Depends on | Completion evidence |
 | --- | --- | --- | --- | --- |
 | P1 — Consistent SQLite reads | Complete | 4/4 | None | Race reproduced before the fix; all 5 storage tests pass; full suite 10 passed / 1 ignored; formatting and Clippy pass |
-| P2 — Refresh reliability | In progress | 2/7 | P1 | P2.1–P2.2 complete: fixtures, deadlines, and typed errors; full suite 26 passed / 1 ignored; formatting and Clippy pass |
+| P2 — Refresh reliability | In progress | 3/7 | P1 | P2.1–P2.3 complete: fixtures, deadlines, typed errors, and nonblocking coordination; full suite 32 passed / 1 ignored; formatting and Clippy pass |
 | P3 — Source freshness and validation | Not started | 0/6 | P2 | — |
 | P4 — Dashboard resilience | Not started | 0/6 | P3 for freshness display; lifecycle work can start earlier | — |
 | P5 — Delivery and deployment | Not started | 0/7 | Final verification depends on P1–P4; CI can start with P1 | — |
@@ -101,7 +101,7 @@ Files: `src/config.rs`, `src/state.rs`, `src/main.rs`, `src/handlers.rs`, `src/p
 
 - [x] **P2.1 — Add deterministic test seams.** Inject provider endpoints and a clock through application construction. Use fixed production HTTPS endpoints and local mock HTTP servers in tests; endpoints must not come from public request input. Add only the test dependencies/features needed for controlled delays, time advancement, and HTTP route tests. Record upstream request counts.
 - [x] **P2.2 — Bound network work.** Configure connect and total timeouts in the shared HTTP client. Introduce a provider error type that distinguishes transport/timeout, HTTP status and retry timing, invalid payload, and invalid price; retain useful diagnostics for logs without exposing internal database paths to clients.
-- [ ] **P2.3 — Introduce explicit refresh coordination.** Replace success-only scheduling with coordinator state for rotation, attempt timing, and provider retry eligibility. Use `try_lock` or equivalent ownership so another request cannot queue behind upstream work. On contention, return the database snapshot with a refresh-in-progress reason. Capture the pending full-refresh generation so completing an older batch cannot clear a newer activation. Derive response viewer counts from current presence after work completes.
+- [x] **P2.3 — Introduce explicit refresh coordination.** Replace success-only scheduling with coordinator state for rotation, attempt timing, and provider retry eligibility. Use `try_lock` or equivalent ownership so another request cannot queue behind upstream work. On contention, return the database snapshot with a refresh-in-progress reason. Capture the pending full-refresh generation so completing an older batch cannot clear a newer activation. Derive response viewer counts from current presence after work completes.
 - [ ] **P2.4 — Keep partial successes.** Replace fail-fast all-provider joining with collection of each provider's result. Merge successes with retained quotes and record failures individually. Advance the cursor after an attempted provider even on failure. Keep the previous quote snapshot intact if no provider succeeds; a database failure must not count as a successful refresh or remove attempt cooldowns.
 - [ ] **P2.5 — Apply cadence and retry policy.** Implement both global gates and per-provider eligibility from the contract. Skip cooling-down providers when selecting the next source; do not consume an attempt when none are eligible. Parse supported `Retry-After` forms defensively, never retry in a tight loop, and reset failure counts after successful recovery. Keep attempt/retry state in memory; P3 adds persisted health for display.
 - [ ] **P2.6 — Correct presence timing.** Use monotonic timestamps for heartbeats and expiry. Recheck presence before upstream dispatch and keep the viewer-map critical section short. Define consistent lock ordering so presence updates cannot deadlock with refresh coordination. Validate at the exact TTL boundary and after hide/show transitions.
@@ -128,6 +128,15 @@ P2.2 implementation evidence (September 6, 2026):
 - Added the already locked `httpdate` crate as a direct dependency, and Tokio `test-util`/`io-util` development features for virtual time and local TCP fixtures. No package versions changed. The manual application clock still controls snapshot/presence timestamps; paused Tokio time controls network deadlines independently.
 - Final checks ran in an ephemeral Rust 1.85.1 container using current workspace sources: `cargo fmt --all -- --check` passed; `cargo clippy --locked --release --all-targets -- -D warnings` passed; `cargo test --locked --release`: **26 passed, 0 failed, 1 ignored**. `git diff --check` passed on the host. The new tests use loopback fixtures, not public provider calls. Selenium and final-image deployment checks were not run for this task.
 - P2.3–P2.7 remain open: refresh ownership still waits on the mutex, full refresh still fails as a batch, and attempt/backoff scheduling and monotonic presence timing have not been implemented.
+
+P2.3 implementation evidence (September 6, 2026):
+
+- Added `src/refresh.rs` with process-local rotation, monotonic attempt timing, provider eligibility deadlines, and completed full-refresh generation. Provider selection no longer derives from the last successfully persisted source. Attempts advance rotation and install a ten-second minimum delay before I/O, so provider failures, failed database writes, and cancelled requests retain the attempt gate.
+- `src/handlers.rs` uses `try_lock`: concurrent callers load the stored snapshot with a refresh-in-progress reason while the owner performs bounded upstream work. Empty-cache callers return 503 without waiting for that owner. Presence is rechecked after the pre-refresh database read, and response viewer counts are recomputed after work and the final database read. Presence updates acquire only the viewer lock and never wait for the coordinator.
+- Replaced the pending boolean with an activation generation. A completed batch acknowledges only its captured generation, leaving any newer activation pending through freshness/attempt gates. Cancellation releases ownership without acknowledging the batch. Provider dispatch now accepts the coordinator's selected sources; full refreshes still use fail-fast joining until P2.4.
+- Added five route regressions for concurrent cached readers, concurrent cold start, activation during a held batch, failure cadence/rotation, and cancellation. Strengthened the failed-write test to verify its attempt cooldown. Replaced the old persisted-source rotation helper test with a coordinator test and added a no-eligible-provider test. Semaphore gates prove responses complete while providers remain held; fixture request counts verify dispatch behavior.
+- Scope overlap: the basic ten-second attempt gate, rotation after failure, and dispatch-time presence recheck were implemented here so coordinator state has real scheduling behavior. P2.4 still owns partial result retention and individual outcomes. P2.5 still owns exponential backoff, failure reset, and `Retry-After` scheduling; P2.6 still owns monotonic viewer expiry and timestamp corrections. The clock seam now exposes monotonic time for attempts, while presence remains on Unix time until P2.6.
+- Final gates in an ephemeral Rust 1.85.1 container: `cargo fmt --all -- --check`, `cargo clippy --locked --release --all-targets -- -D warnings`, and `cargo test --locked --release` passed: **32 passed, 0 failed, 1 ignored**. `git diff --check` passed. Provider tests used loopback fixtures; Selenium and deployment checks were not run for this backend task. Changes remain uncommitted.
 
 **P3 — Per-source freshness and validated prices (6 tasks)**
 
@@ -190,6 +199,8 @@ Append one row per completed task or material decision. Keep historical baseline
 | 2026-09-06 | P2.1 | Injected endpoints/time; added local HTTP fixtures, manual time advancement, response gates, request counters, and five tests; progress 5/30 | Rust 1.85.1: full suite 15 passed / 1 ignored; formatting, Clippy, and diff checks pass | P2.2: add production deadlines and structured provider errors |
 | 2026-09-06 | P2.1 commit/push recorded | P2.1 committed and pushed to `origin/master` | `6990aa6` (`Add deterministic provider and clock test seams`) | Continue P2.2 |
 | 2026-09-06 | P2.2 | Added shared deadlines, typed errors, retry hints, numeric guards, safe API warnings, and 11 tests; progress 6/30 | Rust 1.85.1: full suite 26 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.3: implement nonblocking refresh coordination |
+| 2026-09-06 | P2.2 commit recorded | P2.2 changes committed | `0fdc65f` (`P2.2 complete`) | Continue P2.3 |
+| 2026-09-06 | P2.3 | Added nonblocking coordination, activation generations, monotonic attempt gate, and rotation independent of successful persistence; progress 7/30 | Rust 1.85.1: full suite 32 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.4: keep partial provider successes |
 
 **Baseline validation performed — September 6, 2026**
 

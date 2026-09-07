@@ -2,12 +2,13 @@ use reqwest::Client;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicU64},
 };
 use tokio::sync::Mutex;
 
 use crate::{
     config::UpstreamEndpoints,
+    refresh::RefreshCoordinator,
     util::{Clock, SystemClock},
 };
 
@@ -18,8 +19,8 @@ pub(crate) struct AppState {
     pub(crate) endpoints: Arc<UpstreamEndpoints>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) viewers: Arc<Mutex<HashMap<String, i64>>>,
-    pub(crate) refresh_lock: Arc<Mutex<()>>,
-    pub(crate) full_refresh_pending: Arc<AtomicBool>,
+    pub(crate) refresh: Arc<Mutex<RefreshCoordinator>>,
+    pub(crate) full_refresh_generation: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -44,8 +45,8 @@ impl AppState {
             endpoints: Arc::new(endpoints),
             clock,
             viewers: Arc::new(Mutex::new(HashMap::new())),
-            refresh_lock: Arc::new(Mutex::new(())),
-            full_refresh_pending: Arc::new(AtomicBool::new(false)),
+            refresh: Arc::new(Mutex::new(RefreshCoordinator::default())),
+            full_refresh_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 }

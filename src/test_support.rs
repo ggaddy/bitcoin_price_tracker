@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicI64, AtomicUsize, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -30,7 +30,7 @@ use crate::{
 
 pub(crate) const TEST_NOW: i64 = 1_700_000_000;
 
-pub(crate) struct ManualClock(AtomicI64);
+pub(crate) struct ManualClock(AtomicI64, Instant);
 
 impl ManualClock {
     pub(crate) fn advance(&self, duration: Duration) {
@@ -42,6 +42,10 @@ impl ManualClock {
 }
 
 impl Clock for ManualClock {
+    fn now_monotonic(&self) -> Instant {
+        self.1 + Duration::from_secs((self.now_unix() - TEST_NOW) as u64)
+    }
+
     fn now_unix(&self) -> i64 {
         self.0.load(Ordering::SeqCst)
     }
@@ -231,7 +235,7 @@ impl TestApp {
         let db_path = database.0.join("prices.db");
         init_db(db_path.clone()).await.unwrap();
         let upstreams = MockUpstreams::start().await;
-        let clock = Arc::new(ManualClock(AtomicI64::new(TEST_NOW)));
+        let clock = Arc::new(ManualClock(AtomicI64::new(TEST_NOW), Instant::now()));
         let client = upstream_client_builder().no_proxy().build().unwrap();
         let state =
             AppState::with_dependencies(client, db_path, upstreams.endpoints(), clock.clone());

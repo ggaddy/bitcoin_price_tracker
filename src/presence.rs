@@ -20,7 +20,7 @@ pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePay
     }
 
     if payload.active && previously_empty && !viewers.is_empty() {
-        state.full_refresh_pending.store(true, Ordering::SeqCst);
+        state.full_refresh_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     viewers.len()
@@ -125,6 +125,6 @@ mod tests {
         .await;
 
         assert_eq!(count, 1);
-        assert!(state.full_refresh_pending.load(Ordering::SeqCst));
+        assert_eq!(state.full_refresh_generation.load(Ordering::SeqCst), 1);
     }
 }
