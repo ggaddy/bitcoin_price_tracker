@@ -6,10 +6,11 @@ use tokio::join;
 use crate::{
     config::UpstreamEndpoints,
     errors::{ProviderError, ProviderErrorKind, RefreshError, RetryAfter},
+    models::source_contract::{LastAttempt, ProviderHealth, QuoteKind, StoredQuote},
     models::{SnapshotRecord, SourcePrice},
     refresh::RefreshPlan,
     state::AppState,
-    storage::store_snapshot,
+    storage::store_refresh,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +30,15 @@ impl UpstreamSource {
             Self::Coinbase => "Coinbase",
             Self::Kraken => "Kraken",
             Self::Gemini => "Gemini",
+        }
+    }
+
+    fn quote_kind(self) -> QuoteKind {
+        match self {
+            Self::CoinGecko => QuoteKind::Aggregate,
+            Self::Coinbase => QuoteKind::Spot,
+            Self::Kraken => QuoteKind::LastTrade,
+            Self::Gemini => QuoteKind::Bid,
         }
     }
 }
@@ -115,6 +125,22 @@ async fn fetch_coinbase(client: &Client, endpoint: &str) -> Result<SourcePrice, 
     let provider = UpstreamSource::Coinbase;
     let value = fetch_json(client, endpoint, provider).await?;
 
+    let data = value
+        .get("data")
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing data"))?;
+    // The BTC-USD endpoint fixes the base asset. Some documented responses omit
+    // base, but whenever present it must agree with the requested pair.
+    if data.get("currency").and_then(Value::as_str) != Some("USD")
+        || data
+            .get("base")
+            .is_some_and(|base| base.as_str() != Some("BTC"))
+    {
+        return Err(ProviderError::invalid_payload(
+            provider,
+            "expected BTC/USD quote",
+        ));
+    }
+
     let amount = value
         .get("data")
         .and_then(|entry| entry.get("amount"))
@@ -128,25 +154,50 @@ async fn fetch_kraken(client: &Client, endpoint: &str) -> Result<SourcePrice, Pr
     let provider = UpstreamSource::Kraken;
     let value = fetch_json(client, endpoint, provider).await?;
 
+    let errors = value
+        .get("error")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing error array"))?;
+    if !errors.is_empty() {
+        return Err(ProviderError::invalid_payload(
+            provider,
+            "provider reported an API error",
+        ));
+    }
+
     let ticker = value
         .get("result")
-        .and_then(Value::as_object)
-        .and_then(|result| result.values().next())
-        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing result entry"))?;
+        .and_then(|result| result.get("XXBTZUSD"))
+        .ok_or_else(|| {
+            ProviderError::invalid_payload(provider, "missing BTC/USD result.XXBTZUSD")
+        })?;
 
     let close_str = ticker
         .get("c")
         .and_then(Value::as_array)
         .and_then(|entries| entries.first())
         .and_then(Value::as_str)
-        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing string result.*.c[0]"))?;
+        .ok_or_else(|| {
+            ProviderError::invalid_payload(provider, "missing string result.XXBTZUSD.c[0]")
+        })?;
 
-    parse_price(provider, "result.*.c[0]", close_str)
+    parse_price(provider, "result.XXBTZUSD.c[0]", close_str)
 }
 
 async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, ProviderError> {
     let provider = UpstreamSource::Gemini;
     let value = fetch_json(client, endpoint, provider).await?;
+
+    if !value
+        .get("symbol")
+        .and_then(Value::as_str)
+        .is_some_and(|symbol| symbol.eq_ignore_ascii_case("BTCUSD"))
+    {
+        return Err(ProviderError::invalid_payload(
+            provider,
+            "expected BTCUSD symbol",
+        ));
+    }
 
     let bid = value
         .get("bid")
@@ -159,7 +210,7 @@ async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, Pr
 pub(crate) struct RefreshOutcome {
     // Keep every typed provider error even when persistence also fails.
     pub(crate) failures: Vec<ProviderError>,
-    // Ok(false) means no provider supplied a quote, so no write was attempted.
+    // Ok(false) means health was saved without any new quote.
     pub(crate) stored: Result<bool, RefreshError>,
 }
 
@@ -168,40 +219,40 @@ pub(crate) async fn refresh_snapshot(
     latest_snapshot: Option<SnapshotRecord>,
     plan: &RefreshPlan,
 ) -> RefreshOutcome {
-    let results = fetch_selected_sources(&state.client, &state.endpoints, &plan.sources).await;
+    let results = fetch_selected_sources(state, &plan.sources).await;
     let mut refreshed = Vec::new();
     let mut failures = Vec::new();
-    for result in results {
+    let mut health = Vec::new();
+    for (observation, result) in results {
+        health.push(observation);
         match result {
             Ok(price) => refreshed.push(price),
             Err(error) => failures.push(error),
         }
     }
-    if refreshed.is_empty() {
-        return RefreshOutcome {
-            failures,
-            stored: Ok(false),
+    let has_quotes = !refreshed.is_empty();
+    let snapshot = if has_quotes {
+        let refreshed_source = match refreshed.as_slice() {
+            [price] => price.source.clone(),
+            prices if prices.len() == UpstreamSource::ALL.len() => "all".to_string(),
+            _ => "partial".to_string(),
         };
-    }
-
-    let refreshed_source = match refreshed.as_slice() {
-        [price] => price.source.clone(),
-        prices if prices.len() == UpstreamSource::ALL.len() => "all".to_string(),
-        _ => "partial".to_string(),
+        let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed);
+        let (average_price, spread) = summarize_prices(&sources);
+        Some(SnapshotRecord {
+            fetched_at_unix: state.clock.now_unix(),
+            sources,
+            average_price,
+            spread,
+            warnings: failures.iter().map(ToString::to_string).collect(),
+            refreshed_source: Some(refreshed_source),
+        })
+    } else {
+        None
     };
-    let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed);
-    let (average_price, spread) = summarize_prices(&sources);
-    let snapshot = SnapshotRecord {
-        fetched_at_unix: state.clock.now_unix(),
-        sources,
-        average_price,
-        spread,
-        warnings: failures.iter().map(ToString::to_string).collect(),
-        refreshed_source: Some(refreshed_source),
-    };
-    let stored = store_snapshot(state.db_path.clone(), snapshot)
+    let stored = store_refresh(state.db_path.clone(), snapshot, health)
         .await
-        .map(|()| true)
+        .map(|()| has_quotes)
         .map_err(RefreshError);
     RefreshOutcome { failures, stored }
 }
@@ -220,13 +271,33 @@ async fn fetch_round_robin_source(
 }
 
 async fn fetch_selected_sources(
-    client: &Client,
-    endpoints: &UpstreamEndpoints,
+    state: &AppState,
     sources: &[UpstreamSource],
-) -> Vec<Result<SourcePrice, ProviderError>> {
+) -> Vec<(ProviderHealth, Result<StoredQuote, ProviderError>)> {
     let fetch = |source| async move {
         if sources.contains(&source) {
-            Some(fetch_round_robin_source(client, endpoints, source).await)
+            let attempted_at_unix = state.clock.now_unix();
+            let result = fetch_round_robin_source(&state.client, &state.endpoints, source).await;
+            let last_attempt = match &result {
+                Ok(_) => LastAttempt::Success { attempted_at_unix },
+                Err(error) => LastAttempt::Failure {
+                    attempted_at_unix,
+                    error: error.health_error(),
+                },
+            };
+            let quote = result.map(|price| StoredQuote {
+                source: price.source,
+                price_usd: price.price_usd,
+                last_success_at_unix: Some(state.clock.now_unix()),
+                quote_kind: source.quote_kind(),
+            });
+            Some((
+                ProviderHealth {
+                    source: source.name().into(),
+                    last_attempt,
+                },
+                quote,
+            ))
         } else {
             None
         }
@@ -245,45 +316,41 @@ async fn fetch_selected_sources(
 
 fn merge_snapshot_sources(
     latest_snapshot: Option<&SnapshotRecord>,
-    refreshed_prices: Vec<SourcePrice>,
-) -> Vec<SourcePrice> {
+    refreshed_prices: Vec<StoredQuote>,
+) -> Vec<StoredQuote> {
     let mut source_prices = HashMap::new();
 
     if let Some(snapshot) = latest_snapshot {
         for source in &snapshot.sources {
-            source_prices.insert(source.source.clone(), source.price_usd);
+            if source.price_usd.is_finite() && source.price_usd > 0.0 {
+                source_prices.insert(source.source.clone(), source.clone());
+            }
         }
     }
 
     for refreshed_price in refreshed_prices {
-        source_prices.insert(refreshed_price.source, refreshed_price.price_usd);
+        source_prices.insert(refreshed_price.source.clone(), refreshed_price);
     }
     ordered_sources(source_prices)
 }
 
-fn ordered_sources(mut source_prices: HashMap<String, f64>) -> Vec<SourcePrice> {
+fn ordered_sources(mut source_prices: HashMap<String, StoredQuote>) -> Vec<StoredQuote> {
     let mut sources = Vec::new();
 
     for source in UpstreamSource::ALL {
-        if let Some(price_usd) = source_prices.remove(source.name()) {
-            sources.push(SourcePrice {
-                source: source.name().to_string(),
-                price_usd,
-            });
+        if let Some(quote) = source_prices.remove(source.name()) {
+            sources.push(quote);
         }
     }
 
-    let mut extras: Vec<_> = source_prices
-        .into_iter()
-        .map(|(source, price_usd)| SourcePrice { source, price_usd })
-        .collect();
+    let mut extras: Vec<_> = source_prices.into_values().collect();
     extras.sort_by(|left, right| left.source.cmp(&right.source));
     sources.extend(extras);
 
     sources
 }
 
-fn summarize_prices(sources: &[SourcePrice]) -> (Option<f64>, Option<f64>) {
+fn summarize_prices(sources: &[StoredQuote]) -> (Option<f64>, Option<f64>) {
     if sources.is_empty() {
         return (None, None);
     }
@@ -320,6 +387,44 @@ mod tests {
         errors::{ProviderErrorKind, RetryAfter},
         test_support::{FixtureResponse, TestApp},
     };
+
+    #[tokio::test]
+    async fn provider_observation_times_survive_collection_and_merge() {
+        use crate::{models::source_contract::LastAttempt, test_support::TEST_NOW};
+
+        let app = TestApp::new().await;
+        let mut first =
+            super::fetch_selected_sources(&app.state, &[UpstreamSource::CoinGecko]).await;
+        let (first_health, first_quote) = first.pop().unwrap();
+        assert_eq!(
+            first_health.last_attempt,
+            LastAttempt::Success {
+                attempted_at_unix: TEST_NOW
+            }
+        );
+        let provider = app.upstreams.provider(UpstreamSource::Coinbase);
+        let release = provider.hold_responses();
+        let second = super::fetch_selected_sources(&app.state, &[UpstreamSource::Coinbase]);
+        tokio::pin!(second);
+        tokio::select! {
+            _ = provider.wait_for_request() => {}
+            _ = &mut second => panic!("observation completed before provider release"),
+        }
+        app.clock.advance(Duration::from_secs(7));
+        release.add_permits(1);
+        let (second_health, second_quote) = second.await.pop().unwrap();
+        assert_eq!(
+            second_health.last_attempt,
+            LastAttempt::Success {
+                attempted_at_unix: TEST_NOW
+            }
+        );
+        let merged =
+            super::merge_snapshot_sources(None, vec![first_quote.unwrap(), second_quote.unwrap()]);
+        assert_eq!(merged[0].last_success_at_unix, Some(TEST_NOW));
+        assert_eq!(merged[1].last_success_at_unix, Some(TEST_NOW + 7));
+        assert_eq!(app.upstreams.request_counts(), [1, 1, 0, 0]);
+    }
 
     #[tokio::test]
     async fn provider_fixtures_support_http_errors_malformed_json_and_recovery() {
@@ -501,19 +606,188 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn coinbase_validates_currency_and_any_reported_base() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::Coinbase);
+        for data in [
+            json!({"base": "ETH", "currency": "USD", "amount": "1000"}),
+            json!({"base": "BTC", "currency": "EUR", "amount": "1000"}),
+            json!({"base": "BTC", "amount": "1000"}),
+            json!({"base": null, "currency": "USD", "amount": "1000"}),
+            json!({"base": 42, "currency": "USD", "amount": "1000"}),
+        ] {
+            provider.set_response(FixtureResponse::json(json!({"data": data})));
+            let error = fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Coinbase,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(matches!(
+                error.kind,
+                ProviderErrorKind::InvalidPayload { .. }
+            ));
+        }
+        // Coinbase documents a currency/amount response without the optional base.
+        provider.set_response(FixtureResponse::json(
+            json!({"data": {"currency": "USD", "amount": "100000"}}),
+        ));
+        assert_eq!(
+            fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Coinbase
+            )
+            .await
+            .unwrap()
+            .price_usd,
+            100000.0
+        );
+    }
+
+    #[tokio::test]
+    async fn kraken_selects_btc_usd_and_rejects_error_envelopes() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::Kraken);
+        provider.set_response(FixtureResponse::json(json!({"error": [], "result": {
+            "AETHZUSD": {"c": ["10"]}, "XXBTZUSD": {"c": ["100000"]}
+        }})));
+        assert_eq!(
+            fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Kraken
+            )
+            .await
+            .unwrap()
+            .price_usd,
+            100000.0
+        );
+        for body in [
+            json!({"error": [], "result": {"XETHZUSD": {"c": ["1000"]}}}),
+            json!({"error": ["EQuery:Unknown asset pair"], "result": {"XXBTZUSD": {"c": ["100000"]}}}),
+            json!({"error": null, "result": {"XXBTZUSD": {"c": ["100000"]}}}),
+            json!({"result": {"XXBTZUSD": {"c": ["100000"]}}}),
+            json!({"error": [], "result": {"XXBTZUSD": {"c": []}}}),
+            json!({"error": [], "result": {"XXBTZUSD": {"c": [100000]}}}),
+        ] {
+            provider.set_response(FixtureResponse::json(body));
+            let error = fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Kraken,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(matches!(
+                error.kind,
+                ProviderErrorKind::InvalidPayload { .. }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn gemini_requires_the_btcusd_symbol() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::Gemini);
+        for body in [
+            json!({"symbol": "ETHUSD", "bid": "1000"}),
+            json!({"bid": "1000"}),
+            json!({"symbol": null, "bid": "1000"}),
+        ] {
+            provider.set_response(FixtureResponse::json(body));
+            let error = fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Gemini,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(matches!(
+                error.kind,
+                ProviderErrorKind::InvalidPayload { .. }
+            ));
+        }
+        provider.set_response(FixtureResponse::json(
+            json!({"symbol": "btcusd", "bid": "100000"}),
+        ));
+        assert_eq!(
+            fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::Gemini
+            )
+            .await
+            .unwrap()
+            .price_usd,
+            100000.0
+        );
+    }
+
+    #[tokio::test]
+    async fn coingecko_rejects_non_json_numeric_values_and_wrong_currency() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+        for number in ["NaN", "Infinity", "-Infinity", "1e9999"] {
+            let mut response = FixtureResponse::json(json!({}));
+            response.body = format!("{{\"bitcoin\":{{\"usd\":{number}}}}}");
+            provider.set_response(response);
+            let error = fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::CoinGecko,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(matches!(
+                error.kind,
+                ProviderErrorKind::InvalidPayload { .. }
+            ));
+        }
+        provider.set_response(FixtureResponse::json(json!({"bitcoin": {"eur": 100000}})));
+        assert!(
+            fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::CoinGecko
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_numeric_prices_are_rejected_by_each_provider() {
         let app = TestApp::new().await;
-        for amount in ["0", "-1", "NaN", "inf", "-inf", "not-a-price"] {
+        for amount in [
+            "0",
+            "-0",
+            "-1",
+            "NaN",
+            "inf",
+            "-inf",
+            "Infinity",
+            "1e9999",
+            "not-a-price",
+        ] {
             for (source, body) in [
                 (
                     UpstreamSource::Coinbase,
-                    json!({"data": {"amount": amount}}),
+                    json!({"data": {"base": "BTC", "currency": "USD", "amount": amount}}),
                 ),
                 (
                     UpstreamSource::Kraken,
-                    json!({"result": {"XXBTZUSD": {"c": [amount]}}}),
+                    json!({"error": [], "result": {"XXBTZUSD": {"c": [amount]}}}),
                 ),
-                (UpstreamSource::Gemini, json!({"bid": amount})),
+                (
+                    UpstreamSource::Gemini,
+                    json!({"symbol": "BTCUSD", "bid": amount}),
+                ),
             ] {
                 app.upstreams
                     .provider(source)

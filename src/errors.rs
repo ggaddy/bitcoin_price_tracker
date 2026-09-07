@@ -6,7 +6,10 @@ use std::{
 
 use reqwest::{StatusCode, header::HeaderValue};
 
-use crate::pricing::UpstreamSource;
+use crate::{
+    models::source_contract::{ErrorCategory, SourceError},
+    pricing::UpstreamSource,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RetryAfter {
@@ -52,6 +55,23 @@ pub(crate) struct ProviderError {
 }
 
 impl ProviderError {
+    pub(crate) fn health_error(&self) -> SourceError {
+        let category = match self.kind {
+            ProviderErrorKind::Timeout(_) => ErrorCategory::Timeout,
+            ProviderErrorKind::Transport(_) => ErrorCategory::Transport,
+            ProviderErrorKind::Http { .. } => ErrorCategory::Http,
+            ProviderErrorKind::InvalidPayload { .. } => ErrorCategory::InvalidPayload,
+            ProviderErrorKind::InvalidPrice { .. } => ErrorCategory::InvalidPrice,
+        };
+        SourceError {
+            category,
+            message: self.to_string(),
+            http_status: match self.kind {
+                ProviderErrorKind::Http { status, .. } => Some(status.as_u16()),
+                _ => None,
+            },
+        }
+    }
     pub(crate) fn from_reqwest(provider: UpstreamSource, error: reqwest::Error) -> Self {
         // Body reads can time out too; classify these before JSON decode failures.
         let kind = if error.is_timeout() {

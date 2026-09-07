@@ -94,11 +94,11 @@
         <div class="card-shadow">
           <section class="cyber-card hero" aria-labelledby="average-heading">
             <div class="hero-heading">
-              <h2 class="label" id="average-heading">Average BTC/USD</h2>
+              <h2 class="label" id="average-heading">Indicative average BTC/USD</h2>
               <span class="cyber-badge cyber-badge--outline" id="status" role="status">Connecting</span>
             </div>
             <p class="hero-price cyber-glitch" id="avg" data-text="Loading...">Loading...</p>
-            <p class="hero-caption">USD per bitcoin · Average of stored provider quotes</p>
+            <p class="hero-caption">USD per bitcoin · Mix of spot, bid, last-trade and aggregate quotes</p>
             <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
           </section>
 
@@ -185,16 +185,15 @@
         try {
           const res = await fetch("/api/price");
           const data = await res.json();
-          const healthy = res.ok && data.sources && data.sources.length > 0;
 
           viewersEl.textContent = String(data.active_viewers ?? 0);
 
-          if (!healthy) {
-            setStatus("OFFLINE", "status-bad");
-          } else if (data.stale) {
-            setStatus("STALE", "status-warn");
-          } else {
+          if (data.status === "LIVE") {
             setStatus("LIVE");
+          } else if (data.status === "DEGRADED" || data.status === "STALE") {
+            setStatus(data.status, "status-warn");
+          } else {
+            setStatus("UNAVAILABLE", "status-bad");
           }
 
           avgEl.textContent = data.average_price != null ? formatPrice(data.average_price) : "Unavailable";

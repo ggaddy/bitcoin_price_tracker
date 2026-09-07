@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod errors;
+mod freshness;
 mod handlers;
 mod models;
 mod presence;

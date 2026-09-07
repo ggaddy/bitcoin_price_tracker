@@ -151,7 +151,7 @@ impl MockUpstreams {
             MockProvider::new(json!({"error": [], "result": {
                 "XXBTZUSD": {"c": ["100200.00", "1"]}
             }})),
-            MockProvider::new(json!({"bid": "100300.00"})),
+            MockProvider::new(json!({"symbol": "BTCUSD", "bid": "100300.00"})),
         ];
         let mut app = Router::new();
         for (path, provider) in ["/coingecko", "/coinbase", "/kraken", "/gemini"]
@@ -243,8 +243,13 @@ pub(crate) struct TestApp {
 
 impl TestApp {
     pub(crate) async fn new() -> Self {
+        Self::with_database_seed(|_| {}).await
+    }
+
+    pub(crate) async fn with_database_seed(seed: impl FnOnce(&std::path::Path)) -> Self {
         let database = TestDatabase::new();
         let db_path = database.0.join("prices.db");
+        seed(&db_path);
         init_db(db_path.clone()).await.unwrap();
         let upstreams = MockUpstreams::start().await;
         let clock = Arc::new(ManualClock {

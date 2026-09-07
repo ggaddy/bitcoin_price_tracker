@@ -21,21 +21,44 @@ binary, so styling works without a CDN or a frontend build step.
 - Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
 - Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
 - Requires finite, positive prices; merges successful provider results with retained quotes when other providers fail
+- Explicitly requests Coinbase BTC-USD, checks reported pair identifiers, and rejects Kraken API errors even with HTTP 200
 - Leaves the stored snapshot unchanged if every provider fails or the database write fails
+- Persists each provider's last successful observation time and quote kind, preserving both when another provider refreshes or that provider fails
+- Saves provider outcomes and successful quotes in one transaction; all-provider failure saves health without advancing quote timestamps
 
-The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. If nothing can be saved, errors appear in that request's response and the previous snapshot remains intact. Snapshot timestamps and aggregates still describe the merged snapshot; per-source freshness and persistent health tracking are planned in P3 of [AUDIT.md](AUDIT.md).
+The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. When every provider fails, errors appear in that request's response, the quote snapshot remains intact, and the latest outcomes are saved independently. Any persistence failure rolls back both quotes and health. Snapshot timestamps describe persistence; response aggregates are recomputed from qualifying source observations on every request.
 
-The upcoming observation, provider health, freshness, and coverage fields are
-defined in [the P3 source contract](docs/source-contract.md). These fields are not
-yet served by the live API; observation persistence and response integration
-follow in P3.3–P3.5.
+The API now includes `provider_health` for all configured providers, including
+those without a quote. Each record contains the provider `source` and a
+`last_attempt` outcome (`unknown`, `success`, or `failure`), with the attempt's
+Unix start time and a safe error for failures. Health survives restarts and is
+read consistently with quotes. Each source exposes its observation time, quote kind, age, and freshness.
+Only configured providers with finite positive quotes aged less than 90 seconds
+contribute to the average and spread; unknown, future, and expired observations
+remain visible but do not contribute. With no contributors, both aggregates are null.
+`coverage` reports configured/fresh counts and contributor names.
+
+`status` is `LIVE` when all four providers are fresh with successful health,
+`DEGRADED` when some quotes qualify but coverage or health is incomplete,
+`STALE` when valid retained quotes exist but none qualify, and `UNAVAILABLE`
+when no valid quote exists. A refresh persistence error also degrades LIVE.
+The compatibility `stale` flag is true for every status except LIVE. HTTP status
+remains 200 for retained valid quotes, 503 without valid quotes, or 500 for a
+database read failure.
+See [the P3 source contract](docs/source-contract.md) for the complete field definitions.
+
+The displayed value is an indicative average: it combines Coinbase spot,
+Gemini bid, Kraken last-trade, and CoinGecko aggregate quotes. Invalid prices
+are rejected by provider adapters and the storage writer; invalid retained rows
+are excluded when merging a new snapshot.
 
 Startup now migrates unversioned SQLite databases to schema version 1 atomically.
 It preserves the latest quotes, adds nullable observation times and quote kinds,
 and initializes independent provider health as unknown. Legacy observation times
 are never inferred from snapshot time. Repeated startup preserves the metadata;
 migration failure rolls back all schema/data changes, and unsupported schema
-versions stop startup. Normal refreshes will populate the new metadata in P3.3.
+versions stop startup. Successful refreshes now replace unknown legacy
+observation times with actual per-provider completion times.
 
 Retry delays start when the batch completes and use monotonic deadlines. Invalid or
 unrepresentably large retry hints fall back to exponential backoff. When every

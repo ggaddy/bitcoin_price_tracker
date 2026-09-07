@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-// P3.1 defines the next storage/API contract before P3.2–P3.5 migrate and
-// populate it. Keep the existing live response until observation data is available.
-#[allow(dead_code)]
 pub(crate) mod source_contract;
+pub(crate) use source_contract::PriceResponse;
 
 #[derive(Clone, Serialize)]
 pub(crate) struct SourcePrice {
@@ -11,30 +9,20 @@ pub(crate) struct SourcePrice {
     pub(crate) price_usd: f64,
 }
 
-#[derive(Serialize)]
-pub(crate) struct PriceResponse {
-    pub(crate) symbol: &'static str,
-    pub(crate) currency: &'static str,
-    pub(crate) sources: Vec<SourcePrice>,
-    pub(crate) average_price: Option<f64>,
-    pub(crate) spread: Option<f64>,
-    pub(crate) fetched_at_unix: i64,
-    pub(crate) fetched_age_seconds: Option<i64>,
-    pub(crate) warnings: Vec<String>,
-    pub(crate) refresh_succeeded: bool,
-    pub(crate) stale: bool,
-    pub(crate) active_viewers: usize,
-    pub(crate) refresh_skipped_reason: Option<String>,
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SnapshotRecord {
     pub(crate) fetched_at_unix: i64,
-    pub(crate) sources: Vec<SourcePrice>,
+    pub(crate) sources: Vec<source_contract::StoredQuote>,
     pub(crate) average_price: Option<f64>,
     pub(crate) spread: Option<f64>,
     pub(crate) warnings: Vec<String>,
     pub(crate) refreshed_source: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct StoredPriceState {
+    pub(crate) snapshot: Option<SnapshotRecord>,
+    pub(crate) provider_health: Vec<source_contract::ProviderHealth>,
 }
 
 #[derive(Deserialize)]

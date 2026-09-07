@@ -8,15 +8,17 @@ use std::sync::atomic::Ordering;
 use tracing::warn;
 
 use crate::{
-    config::REFRESH_INTERVAL_SECONDS,
+    config::SOURCE_MAX_AGE_SECONDS,
+    freshness::evaluate_quotes,
     models::{PresencePayload, PresenceResponse, PriceResponse},
+    models::{StoredPriceState, source_contract::PriceStatus},
     presence::{
         active_viewer_count, apply_presence_update, is_valid_session_id, refresh_skip_reason,
         snapshot_age_seconds,
     },
     pricing::refresh_snapshot,
     state::AppState,
-    storage::load_latest_snapshot,
+    storage::load_price_state,
     ui::INDEX_HTML,
 };
 
@@ -51,8 +53,9 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                 .to_string(),
         );
     } else if let Ok(mut coordinator) = state.refresh.try_lock() {
-        match load_latest_snapshot(state.db_path.clone()).await {
-            Ok(snapshot) => {
+        match load_price_state(state.db_path.clone()).await {
+            Ok(stored) => {
+                let snapshot = stored.snapshot;
                 let age = snapshot
                     .as_ref()
                     .and_then(|record| snapshot_age_seconds(record, state.clock.now_unix()));
@@ -105,83 +108,82 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
             Some("Refresh skipped: another refresh is in progress.".to_string());
     }
 
-    let stored_snapshot = load_latest_snapshot(state.db_path.clone()).await;
+    let stored_snapshot = load_price_state(state.db_path.clone()).await;
     let active_viewers = active_viewer_count(&state).await;
     let response_now = state.clock.now_unix();
-    match stored_snapshot {
-        Ok(Some(snapshot)) => {
-            let fetched_age_seconds = snapshot_age_seconds(&snapshot, response_now);
-            let stale = fetched_age_seconds
-                .map(|age| age >= REFRESH_INTERVAL_SECONDS)
-                .unwrap_or(true);
-            let mut warnings = snapshot.warnings.clone();
-
-            warnings.splice(
-                0..0,
-                refresh_errors.into_iter().map(|error| {
-                    format!("Refresh failed; serving latest SQLite snapshot: {error}")
-                }),
-            );
-
-            (
-                StatusCode::OK,
-                Json(PriceResponse {
-                    symbol: "BTC",
-                    currency: "USD",
-                    sources: snapshot.sources,
-                    average_price: snapshot.average_price,
-                    spread: snapshot.spread,
-                    fetched_at_unix: snapshot.fetched_at_unix,
-                    fetched_age_seconds,
-                    warnings,
-                    refresh_succeeded,
-                    stale,
-                    active_viewers,
-                    refresh_skipped_reason,
-                }),
-            )
-        }
-        Ok(None) => {
-            let mut warnings = vec!["No stored BTC price snapshot is available yet.".to_string()];
-            warnings.extend(refresh_errors);
-
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(PriceResponse {
-                    symbol: "BTC",
-                    currency: "USD",
-                    sources: Vec::new(),
-                    average_price: None,
-                    spread: None,
-                    fetched_at_unix: 0,
-                    fetched_age_seconds: None,
-                    warnings,
-                    refresh_succeeded: false,
-                    stale: true,
-                    active_viewers,
-                    refresh_skipped_reason,
-                }),
-            )
-        }
+    let (stored, read_failed) = match stored_snapshot {
+        Ok(stored) => (stored, false),
         Err(error) => {
-            warn!("failed to load SQLite snapshot: {error}");
+            warn!(error = %error, "failed to load SQLite price state");
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PriceResponse {
-                    symbol: "BTC",
-                    currency: "USD",
-                    sources: Vec::new(),
-                    average_price: None,
-                    spread: None,
-                    fetched_at_unix: 0,
-                    fetched_age_seconds: None,
-                    warnings: vec!["Failed to load stored price data.".to_string()],
-                    refresh_succeeded: false,
-                    stale: true,
-                    active_viewers,
-                    refresh_skipped_reason,
-                }),
+                StoredPriceState {
+                    snapshot: None,
+                    provider_health: Vec::new(),
+                },
+                true,
             )
         }
+    };
+    let fetched_at_unix = stored
+        .snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.fetched_at_unix);
+    let fetched_age_seconds = stored
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot_age_seconds(snapshot, response_now));
+    let had_snapshot = stored.snapshot.is_some();
+    let (quotes, mut warnings) = stored.snapshot.map_or_else(
+        || {
+            (
+                Vec::new(),
+                vec!["No stored BTC price snapshot is available yet.".to_string()],
+            )
+        },
+        |snapshot| (snapshot.sources, snapshot.warnings),
+    );
+    let mut evaluated = evaluate_quotes(quotes, &stored.provider_health, response_now);
+    if !refresh_errors.is_empty() && evaluated.status == PriceStatus::Live {
+        evaluated.status = PriceStatus::Degraded;
     }
+    warnings.splice(
+        0..0,
+        refresh_errors.into_iter().map(|error| {
+            if had_snapshot {
+                format!("Refresh failed; serving latest SQLite snapshot: {error}")
+            } else {
+                error
+            }
+        }),
+    );
+    let status = if read_failed {
+        warnings = vec!["Failed to load stored price data.".to_string()];
+        StatusCode::INTERNAL_SERVER_ERROR
+    } else if evaluated.sources.is_empty() {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        Json(PriceResponse {
+            symbol: "BTC",
+            currency: "USD",
+            sources: evaluated.sources,
+            provider_health: stored.provider_health,
+            average_price: evaluated.average_price,
+            spread: evaluated.spread,
+            status: evaluated.status,
+            coverage: evaluated.coverage,
+            source_max_age_seconds: SOURCE_MAX_AGE_SECONDS,
+            evaluated_at_unix: response_now,
+            fetched_at_unix,
+            fetched_age_seconds,
+            warnings,
+            refresh_succeeded: refresh_succeeded && !read_failed,
+            stale: evaluated.status != PriceStatus::Live,
+            active_viewers,
+            refresh_skipped_reason,
+        }),
+    )
 }

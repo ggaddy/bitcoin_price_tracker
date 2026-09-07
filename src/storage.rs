@@ -7,7 +7,10 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task;
 
 use crate::{
-    models::{SnapshotRecord, SourcePrice},
+    models::{
+        SnapshotRecord, StoredPriceState,
+        source_contract::{LastAttempt, ProviderHealth, SourceError, StoredQuote},
+    },
     pricing::UpstreamSource,
 };
 
@@ -165,6 +168,7 @@ fn prune_snapshots_to_latest(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) async fn store_snapshot(
     db_path: PathBuf,
     snapshot: SnapshotRecord,
@@ -172,12 +176,46 @@ pub(crate) async fn store_snapshot(
     run_blocking(move || store_snapshot_sync(&db_path, snapshot)).await
 }
 
+#[cfg(test)]
 fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), String> {
+    store_refresh_sync(db_path, Some(snapshot), Vec::new())
+}
+
+pub(crate) async fn store_refresh(
+    db_path: PathBuf,
+    snapshot: Option<SnapshotRecord>,
+    health: Vec<ProviderHealth>,
+) -> Result<(), String> {
+    run_blocking(move || store_refresh_sync(&db_path, snapshot, health)).await
+}
+
+fn store_refresh_sync(
+    db_path: &Path,
+    snapshot: Option<SnapshotRecord>,
+    health: Vec<ProviderHealth>,
+) -> Result<(), String> {
     let mut conn = open_connection(db_path)?;
     let tx = conn
         .transaction()
         .map_err(|error| format!("failed to start SQLite transaction: {error}"))?;
 
+    if let Some(snapshot) = snapshot {
+        write_snapshot(&tx, snapshot)?;
+    }
+    write_provider_health(&tx, health)?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit refresh transaction: {error}"))?;
+    Ok(())
+}
+
+fn write_snapshot(tx: &Connection, snapshot: SnapshotRecord) -> Result<(), String> {
+    if snapshot
+        .sources
+        .iter()
+        .any(|quote| !quote.price_usd.is_finite() || quote.price_usd <= 0.0)
+    {
+        return Err("refusing to store an invalid source price".to_string());
+    }
     // Persist only the current merged snapshot instead of a refresh history.
     tx.execute("DELETE FROM price_snapshots", [])
         .map_err(|error| format!("failed to clear stored price snapshot: {error}"))?;
@@ -207,43 +245,75 @@ fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), S
     let snapshot_id = tx.last_insert_rowid();
     let mut stmt = tx
         .prepare(
-            "INSERT INTO source_prices (snapshot_id, source, price_usd)
-             VALUES (?1, ?2, ?3)",
+            "INSERT INTO source_prices (snapshot_id, source, price_usd, last_success_at_unix, quote_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .map_err(|error| format!("failed to prepare source insert: {error}"))?;
 
     for source in snapshot.sources {
-        stmt.execute(params![snapshot_id, source.source, source.price_usd])
-            .map_err(|error| format!("failed to insert source price: {error}"))?;
+        stmt.execute(params![
+            snapshot_id,
+            source.source,
+            source.price_usd,
+            source.last_success_at_unix,
+            enum_text(source.quote_kind)?
+        ])
+        .map_err(|error| format!("failed to insert source price: {error}"))?;
     }
 
     drop(stmt);
-    tx.commit()
-        .map_err(|error| format!("failed to commit SQLite transaction: {error}"))?;
 
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) async fn load_latest_snapshot(
     db_path: PathBuf,
 ) -> Result<Option<SnapshotRecord>, String> {
-    run_blocking(move || load_latest_snapshot_sync(&db_path)).await
+    load_price_state(db_path).await.map(|state| state.snapshot)
 }
 
+#[cfg(test)]
 fn load_latest_snapshot_sync(db_path: &Path) -> Result<Option<SnapshotRecord>, String> {
     load_latest_snapshot_sync_with_hook(db_path, || {})
 }
 
-// The hook lets tests commit a replacement between the two queries deterministically.
+#[cfg(test)]
 fn load_latest_snapshot_sync_with_hook(
     db_path: &Path,
     after_metadata: impl FnOnce(),
 ) -> Result<Option<SnapshotRecord>, String> {
+    load_price_state_sync_with_hook(db_path, after_metadata).map(|state| state.snapshot)
+}
+
+pub(crate) async fn load_price_state(db_path: PathBuf) -> Result<StoredPriceState, String> {
+    run_blocking(move || load_price_state_sync_with_hook(&db_path, || {})).await
+}
+
+// Hold one read snapshot across quote metadata, source observations, and health,
+// including the case where only failed-attempt health exists on a cold database.
+fn load_price_state_sync_with_hook(
+    db_path: &Path,
+    after_metadata: impl FnOnce(),
+) -> Result<StoredPriceState, String> {
     let mut conn = open_connection(db_path)?;
-    // Both queries must see the same committed snapshot, even if a writer replaces it.
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(|error| format!("failed to start SQLite read transaction: {error}"))?;
+    let snapshot = read_snapshot(&tx, after_metadata)?;
+    let provider_health = read_provider_health(&tx)?;
+    tx.commit()
+        .map_err(|error| format!("failed to finish SQLite read transaction: {error}"))?;
+    Ok(StoredPriceState {
+        snapshot,
+        provider_health,
+    })
+}
+
+fn read_snapshot(
+    tx: &Connection,
+    after_metadata: impl FnOnce(),
+) -> Result<Option<SnapshotRecord>, String> {
     let latest = tx
         .query_row(
             "
@@ -267,6 +337,8 @@ fn load_latest_snapshot_sync_with_hook(
         .optional()
         .map_err(|error| format!("failed to query latest snapshot: {error}"))?;
 
+    after_metadata();
+
     let Some((
         snapshot_id,
         fetched_at_unix,
@@ -279,15 +351,13 @@ fn load_latest_snapshot_sync_with_hook(
         return Ok(None);
     };
 
-    after_metadata();
-
     let warnings = serde_json::from_str::<Vec<String>>(&warnings_json)
         .map_err(|error| format!("failed to decode stored warnings: {error}"))?;
 
     let mut stmt = tx
         .prepare(
             "
-            SELECT source, price_usd
+            SELECT source, price_usd, last_success_at_unix, quote_kind
             FROM source_prices
             WHERE snapshot_id = ?1
             ORDER BY
@@ -305,9 +375,11 @@ fn load_latest_snapshot_sync_with_hook(
 
     let rows = stmt
         .query_map(params![snapshot_id], |row| {
-            Ok(SourcePrice {
+            Ok(StoredQuote {
                 source: row.get(0)?,
                 price_usd: row.get(1)?,
+                last_success_at_unix: row.get(2)?,
+                quote_kind: decode_enum(row, 3)?,
             })
         })
         .map_err(|error| format!("failed to query stored source prices: {error}"))?;
@@ -318,8 +390,6 @@ fn load_latest_snapshot_sync_with_hook(
     }
 
     drop(stmt);
-    tx.commit()
-        .map_err(|error| format!("failed to finish SQLite read transaction: {error}"))?;
 
     Ok(Some(SnapshotRecord {
         fetched_at_unix,
@@ -329,6 +399,92 @@ fn load_latest_snapshot_sync_with_hook(
         warnings,
         refreshed_source,
     }))
+}
+
+fn enum_text(value: impl serde::Serialize) -> Result<String, String> {
+    serde_json::to_value(value)
+        .map_err(|error| error.to_string())?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "expected a string enum".to_string())
+}
+
+fn decode_enum<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<T> {
+    let text: String = row.get(index)?;
+    serde_json::from_value(serde_json::Value::String(text)).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn write_provider_health(conn: &Connection, health: Vec<ProviderHealth>) -> Result<(), String> {
+    for record in health {
+        let (outcome, attempted_at, category, message, status) = match record.last_attempt {
+            LastAttempt::Unknown => ("unknown", None, None, None, None),
+            LastAttempt::Success { attempted_at_unix } => {
+                ("success", Some(attempted_at_unix), None, None, None)
+            }
+            LastAttempt::Failure {
+                attempted_at_unix,
+                error,
+            } => (
+                "failure",
+                Some(attempted_at_unix),
+                Some(enum_text(error.category)?),
+                Some(error.message),
+                error.http_status,
+            ),
+        };
+        conn.execute(
+            "INSERT INTO provider_health (source, attempt_outcome, attempted_at_unix, error_category, error_message, http_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(source) DO UPDATE SET attempt_outcome = excluded.attempt_outcome,
+                 attempted_at_unix = excluded.attempted_at_unix, error_category = excluded.error_category,
+                 error_message = excluded.error_message, http_status = excluded.http_status",
+            params![record.source, outcome, attempted_at, category, message, status],
+        ).map_err(|error| format!("failed to store provider health: {error}"))?;
+    }
+    Ok(())
+}
+
+fn read_provider_health(conn: &Connection) -> Result<Vec<ProviderHealth>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT source, attempt_outcome, attempted_at_unix, error_category, error_message, http_status
+         FROM provider_health ORDER BY CASE source
+             WHEN 'CoinGecko' THEN 0 WHEN 'Coinbase' THEN 1 WHEN 'Kraken' THEN 2 WHEN 'Gemini' THEN 3 ELSE 99 END, source"
+    ).map_err(|error| format!("failed to prepare provider health lookup: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let outcome: String = row.get(1)?;
+            let last_attempt = match outcome.as_str() {
+                "unknown" => LastAttempt::Unknown,
+                "success" => LastAttempt::Success {
+                    attempted_at_unix: row.get(2)?,
+                },
+                "failure" => LastAttempt::Failure {
+                    attempted_at_unix: row.get(2)?,
+                    error: SourceError {
+                        category: decode_enum(row, 3)?,
+                        message: row.get(4)?,
+                        http_status: row.get(5)?,
+                    },
+                },
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(ProviderHealth {
+                source: row.get(0)?,
+                last_attempt,
+            })
+        })
+        .map_err(|error| format!("failed to query provider health: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode provider health: {error}"))
 }
 
 fn open_connection(db_path: &Path) -> Result<Connection, String> {
@@ -363,7 +519,10 @@ mod tests {
 
     use rusqlite::params;
 
-    use crate::models::{SnapshotRecord, SourcePrice};
+    use crate::models::{
+        SnapshotRecord,
+        source_contract::{QuoteKind, StoredQuote},
+    };
 
     use super::{
         init_db_sync, load_latest_snapshot_sync, load_latest_snapshot_sync_with_hook,
@@ -381,9 +540,11 @@ mod tests {
     fn snapshot_for_test(index: i64) -> SnapshotRecord {
         SnapshotRecord {
             fetched_at_unix: index,
-            sources: vec![SourcePrice {
+            sources: vec![StoredQuote {
                 source: "CoinGecko".to_string(),
                 price_usd: 100_000.0 + index as f64,
+                last_success_at_unix: None,
+                quote_kind: QuoteKind::Unknown,
             }],
             average_price: Some(100_000.0 + index as f64),
             spread: Some(0.0),
@@ -703,6 +864,62 @@ mod tests {
     }
 
     #[test]
+    fn quote_and_health_reads_share_one_snapshot_even_without_previous_quotes() {
+        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+
+        for seeded in [false, true] {
+            let db_path = temp_db_path("quote-health-consistency");
+            init_db_sync(&db_path).unwrap();
+            let conn = open_connection(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+            if seeded {
+                super::store_refresh_sync(
+                    &db_path,
+                    Some(snapshot_for_test(10)),
+                    vec![ProviderHealth {
+                        source: "CoinGecko".into(),
+                        last_attempt: LastAttempt::Success {
+                            attempted_at_unix: 10,
+                        },
+                    }],
+                )
+                .unwrap();
+            }
+            let before = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
+            let observed = super::load_price_state_sync_with_hook(&db_path, || {
+                let mut snapshot = snapshot_for_test(20);
+                snapshot.sources[0].last_success_at_unix = Some(20);
+                super::store_refresh_sync(
+                    &db_path,
+                    Some(snapshot),
+                    vec![ProviderHealth {
+                        source: "CoinGecko".into(),
+                        last_attempt: LastAttempt::Success {
+                            attempted_at_unix: 20,
+                        },
+                    }],
+                )
+                .unwrap();
+                let committed = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
+                assert_eq!(
+                    committed.snapshot.unwrap().sources[0].last_success_at_unix,
+                    Some(20)
+                );
+                assert_eq!(
+                    committed.provider_health[0].last_attempt,
+                    LastAttempt::Success {
+                        attempted_at_unix: 20
+                    }
+                );
+            })
+            .unwrap();
+            assert_eq!(observed, before);
+            drop(conn);
+            fs::remove_file(db_path).unwrap();
+        }
+    }
+
+    #[test]
     fn load_empty_database_returns_none_and_allows_subsequent_write() {
         let db_path = temp_db_path("empty-read");
         init_db_sync(&db_path).unwrap();
@@ -737,9 +954,11 @@ mod tests {
         .unwrap();
 
         let mut replacement = snapshot_for_test(20);
-        replacement.sources.push(SourcePrice {
+        replacement.sources.push(StoredQuote {
             source: "Coinbase".to_string(),
             price_usd: 100_040.0,
+            last_success_at_unix: None,
+            quote_kind: QuoteKind::Unknown,
         });
         replacement.average_price = Some(100_030.0);
         replacement.spread = Some(20.0);
@@ -779,6 +998,37 @@ mod tests {
     }
 
     #[test]
+    fn invalid_numeric_quote_cannot_replace_stored_quotes_or_health() {
+        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+
+        let db_path = temp_db_path("invalid-price-write");
+        init_db_sync(&db_path).unwrap();
+        store_snapshot_sync(&db_path, snapshot_for_test(10)).unwrap();
+        let before = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
+        for price in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut replacement = snapshot_for_test(20);
+            replacement.sources[0].price_usd = price;
+            let error = super::store_refresh_sync(
+                &db_path,
+                Some(replacement),
+                vec![ProviderHealth {
+                    source: "CoinGecko".into(),
+                    last_attempt: LastAttempt::Success {
+                        attempted_at_unix: 20,
+                    },
+                }],
+            )
+            .unwrap_err();
+            assert!(error.contains("invalid source price"));
+            assert_eq!(
+                super::load_price_state_sync_with_hook(&db_path, || {}).unwrap(),
+                before
+            );
+        }
+        fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
     fn store_snapshot_replaces_previous_snapshot_and_source_rows() {
         let db_path = temp_db_path("latest-only");
         init_db_sync(&db_path).unwrap();
@@ -789,13 +1039,17 @@ mod tests {
             SnapshotRecord {
                 fetched_at_unix: 20,
                 sources: vec![
-                    SourcePrice {
+                    StoredQuote {
                         source: "Coinbase".to_string(),
                         price_usd: 200_100.0,
+                        last_success_at_unix: None,
+                        quote_kind: QuoteKind::Unknown,
                     },
-                    SourcePrice {
+                    StoredQuote {
                         source: "CoinGecko".to_string(),
                         price_usd: 200_000.0,
+                        last_success_at_unix: None,
+                        quote_kind: QuoteKind::Unknown,
                     },
                 ],
                 average_price: Some(200_050.0),

@@ -9,7 +9,10 @@ use thirtyfour::prelude::*;
 use crate::{
     app::router,
     config::upstream_client_builder,
-    models::{SnapshotRecord, SourcePrice},
+    models::{
+        SnapshotRecord,
+        source_contract::{QuoteKind, StoredQuote},
+    },
     state::AppState,
     storage::{init_db, store_snapshot},
     util::now_unix,
@@ -61,9 +64,11 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
         db_path.clone(),
         SnapshotRecord {
             fetched_at_unix: now_unix(),
-            sources: vec![SourcePrice {
+            sources: vec![StoredQuote {
                 source: "CoinGecko".to_string(),
                 price_usd: 70_800.53,
+                last_success_at_unix: None,
+                quote_kind: QuoteKind::Unknown,
             }],
             average_price: Some(70_800.53),
             spread: Some(0.0),

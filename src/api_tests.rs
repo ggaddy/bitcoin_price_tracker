@@ -11,6 +11,255 @@ use crate::{
     test_support::{FixtureResponse, TEST_NOW, TestApp},
 };
 
+// Earlier regressions compare retained quote values; age and freshness now
+// legitimately change on every response. Dedicated freshness tests assert metadata.
+fn quote_values(data: &serde_json::Value) -> serde_json::Value {
+    data["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| json!({"source": source["source"], "price_usd": source["price_usd"]}))
+        .collect()
+}
+
+// Exercise the public JSON types on real routes, including empty/error responses.
+fn assert_freshness_contract(data: &serde_json::Value, status: &str, fresh: usize) {
+    assert_eq!(data["status"], status);
+    assert_eq!(data["stale"], status != "LIVE");
+    assert_eq!(data["source_max_age_seconds"], 90);
+    assert!(data["evaluated_at_unix"].is_i64());
+    assert!(data["fetched_at_unix"].is_i64());
+    assert!(data["fetched_age_seconds"].is_null() || data["fetched_age_seconds"].is_i64());
+    assert!(data["refresh_succeeded"].is_boolean());
+    assert!(data["warnings"].is_array());
+    assert_eq!(data["coverage"]["configured_source_count"], 4);
+    assert_eq!(data["coverage"]["fresh_source_count"], fresh);
+    assert_eq!(
+        data["coverage"]["contributing_sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        fresh
+    );
+    for key in ["average_price", "spread"] {
+        if fresh == 0 {
+            assert!(data[key].is_null());
+        } else {
+            assert!(data[key].is_number());
+        }
+    }
+    for source in data["sources"].as_array().unwrap() {
+        assert!(source["source"].is_string());
+        assert!(source["price_usd"].as_f64().unwrap() > 0.0);
+        assert!(source["quote_kind"].is_string());
+        assert!(
+            source["last_success_at_unix"].is_null() || source["last_success_at_unix"].is_i64()
+        );
+        assert!(source["age_seconds"].is_null() || source["age_seconds"].is_i64());
+        assert!(source["freshness"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn legacy_database_recovers_through_partial_refresh_and_restart() {
+    for with_refreshed_source in [false, true] {
+        let mut app = TestApp::with_database_seed(|path| {
+            let conn = rusqlite::Connection::open(path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE price_snapshots (
+                id INTEGER PRIMARY KEY, fetched_at_unix INTEGER NOT NULL,
+                average_price REAL, spread REAL, warnings_json TEXT NOT NULL);
+                CREATE TABLE source_prices (id INTEGER PRIMARY KEY,
+                snapshot_id INTEGER NOT NULL REFERENCES price_snapshots(id) ON DELETE CASCADE,
+                source TEXT NOT NULL, price_usd REAL NOT NULL);
+                INSERT INTO price_snapshots VALUES (1, 1699999900, 42, 42, '[]');
+                INSERT INTO source_prices VALUES (1, 1, 'CoinGecko', 90000),
+                (2, 1, 'Coinbase', 90001), (3, 1, 'Kraken', 90002), (4, 1, 'Gemini', 90003);",
+            )
+            .unwrap();
+            if with_refreshed_source {
+                conn.execute_batch("ALTER TABLE price_snapshots ADD COLUMN refreshed_source TEXT;")
+                    .unwrap();
+            }
+        })
+        .await;
+        let (http, legacy) = app.price().await;
+        assert_eq!(http, StatusCode::OK);
+        assert_freshness_contract(&legacy, "STALE", 0);
+        for source in legacy["sources"].as_array().unwrap() {
+            assert!(source["last_success_at_unix"].is_null());
+            assert_eq!(source["freshness"], "unknown");
+        }
+        app.restart().await;
+        assert_eq!(app.price().await.1["sources"], legacy["sources"]);
+        app.upstreams
+            .provider(UpstreamSource::Coinbase)
+            .set_response(FixtureResponse::json(json!({})));
+        app.presence(true).await;
+        let (_, partial) = app.price().await;
+        assert_freshness_contract(&partial, "DEGRADED", 3);
+        assert_eq!(partial["sources"][1]["price_usd"], 90001.0);
+        assert!(partial["sources"][1]["last_success_at_unix"].is_null());
+        assert_eq!(
+            partial["provider_health"][1]["last_attempt"]["outcome"],
+            "failure"
+        );
+        app.restart().await;
+        let (_, restarted) = app.price().await;
+        assert_freshness_contract(&restarted, "DEGRADED", 3);
+        assert_eq!(restarted["sources"], partial["sources"]);
+        assert_eq!(restarted["provider_health"], partial["provider_health"]);
+        app.clock.advance(Duration::from_secs(90));
+        assert_freshness_contract(&app.price().await.1, "STALE", 0);
+        app.upstreams
+            .provider(UpstreamSource::Coinbase)
+            .set_response(FixtureResponse::json(json!({
+                "data": {"base": "BTC", "currency": "USD", "amount": "100100.00"}
+            })));
+        app.presence(true).await;
+        let (http, recovered) = app.price().await;
+        assert_eq!(http, StatusCode::OK);
+        assert_freshness_contract(&recovered, "LIVE", 4);
+        assert_eq!(recovered["average_price"], 100150.0);
+        for source in recovered["sources"].as_array().unwrap() {
+            assert_eq!(source["last_success_at_unix"], TEST_NOW + 90);
+            assert_eq!(source["age_seconds"], 0);
+        }
+        app.restart().await;
+        assert_freshness_contract(&app.price().await.1, "LIVE", 4);
+        assert_eq!(app.upstreams.request_counts(), [2; 4]);
+    }
+}
+
+#[tokio::test]
+async fn unavailable_and_database_read_failure_expose_consistent_contracts() {
+    let app = TestApp::new().await;
+    let (http, empty) = app.price().await;
+    assert_eq!(http, StatusCode::SERVICE_UNAVAILABLE);
+    assert_freshness_contract(&empty, "UNAVAILABLE", 0);
+    assert_eq!(empty["sources"], json!([]));
+    assert_eq!(empty["provider_health"].as_array().unwrap().len(), 4);
+    assert_eq!(empty["fetched_at_unix"], 0);
+    assert!(empty["fetched_age_seconds"].is_null());
+    for source in UpstreamSource::ALL {
+        app.upstreams
+            .provider(source)
+            .set_response(FixtureResponse::json(json!({})));
+    }
+    app.presence(true).await;
+    let (http, failed) = app.price().await;
+    assert_eq!(http, StatusCode::SERVICE_UNAVAILABLE);
+    assert_freshness_contract(&failed, "UNAVAILABLE", 0);
+    for health in failed["provider_health"].as_array().unwrap() {
+        assert_eq!(health["last_attempt"]["outcome"], "failure");
+        assert!(health["last_attempt"]["attempted_at_unix"].is_i64());
+        assert!(health["last_attempt"]["error"]["message"].is_string());
+        assert!(health["last_attempt"]["error"]["http_status"].is_null());
+    }
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch("ALTER TABLE provider_health RENAME TO private_health;")
+        .unwrap();
+    let (http, unreadable) = app.price().await;
+    assert_eq!(http, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_freshness_contract(&unreadable, "UNAVAILABLE", 0);
+    assert_eq!(unreadable["sources"], json!([]));
+    assert_eq!(unreadable["provider_health"], json!([]));
+    assert_eq!(
+        unreadable["warnings"],
+        json!(["Failed to load stored price data."])
+    );
+    assert!(!unreadable.to_string().contains("private_health"));
+}
+
+#[tokio::test]
+async fn source_expiry_changes_coverage_without_refreshing_retained_quotes() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.1["status"], "LIVE");
+    for seconds in [10, 10, 10, 10, 10, 10, 10, 10, 9] {
+        app.clock.advance(Duration::from_secs(seconds));
+        app.presence(true).await;
+    }
+    let (_, at_89) = app.price().await;
+    assert_eq!(at_89["status"], "LIVE");
+    assert_eq!(at_89["sources"][1]["age_seconds"], 89);
+    app.clock.advance(Duration::from_secs(1));
+    let (_, at_90) = app.price().await;
+    assert_eq!(at_90["fetched_age_seconds"], 1);
+    assert_eq!(at_90["status"], "DEGRADED");
+    assert_eq!(at_90["stale"], true);
+    assert_eq!(at_90["average_price"], 100000.0);
+    assert_eq!(at_90["spread"], 0.0);
+    assert_eq!(at_90["sources"][1]["freshness"], "stale");
+    assert_eq!(
+        at_90["coverage"],
+        json!({"configured_source_count": 4, "fresh_source_count": 1, "contributing_sources": ["CoinGecko"]})
+    );
+    app.clock.advance(Duration::from_secs(89));
+    let (status, expired) = app.price().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(expired["status"], "STALE");
+    assert!(expired["average_price"].is_null());
+    assert!(expired["spread"].is_null());
+    assert_eq!(expired["sources"].as_array().unwrap().len(), 4);
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
+}
+
+#[tokio::test]
+async fn unknown_and_future_observations_do_not_reuse_snapshot_aggregates() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    app.presence(false).await;
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch(
+        "UPDATE price_snapshots SET average_price = 1, spread = 2;
+        UPDATE source_prices SET last_success_at_unix = CASE source
+            WHEN 'CoinGecko' THEN NULL WHEN 'Coinbase' THEN 1700000001
+            WHEN 'Kraken' THEN 1699999910 ELSE 1699999911 END;",
+    )
+    .unwrap();
+    let (_, data) = app.price().await;
+    assert_eq!(data["sources"][0]["freshness"], "unknown");
+    assert_eq!(data["sources"][1]["freshness"], "future");
+    assert!(data["sources"][0]["age_seconds"].is_null());
+    assert!(data["sources"][1]["age_seconds"].is_null());
+    assert_eq!(data["sources"][2]["age_seconds"], 90);
+    assert_eq!(data["average_price"], 100300.0);
+    assert_eq!(data["spread"], 0.0);
+    assert_eq!(data["status"], "DEGRADED");
+    conn.execute("UPDATE source_prices SET last_success_at_unix = NULL", [])
+        .unwrap();
+    let (status, unknown) = app.price().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unknown["status"], "STALE");
+    assert!(unknown["average_price"].is_null());
+    conn.execute("UPDATE source_prices SET price_usd = 0", [])
+        .unwrap();
+    let (status, invalid) = app.price().await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(invalid["status"], "UNAVAILABLE");
+    assert_eq!(invalid["sources"], json!([]));
+}
+
+#[tokio::test]
+async fn fresh_retained_quote_after_provider_failure_contributes_but_is_degraded() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    app.clock.advance(Duration::from_secs(10));
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({})));
+    let (_, data) = app.price().await;
+    assert_eq!(data["status"], "DEGRADED");
+    assert_eq!(data["stale"], true);
+    assert_eq!(data["coverage"]["fresh_source_count"], 4);
+    assert_eq!(data["average_price"], 100150.0);
+    assert_eq!(data["sources"][0]["freshness"], "fresh");
+    assert_eq!(data["sources"][0]["last_success_at_unix"], TEST_NOW);
+}
+
 #[tokio::test]
 async fn all_rate_limited_providers_wait_without_consuming_pending_activation() {
     use axum::http::{HeaderValue, header::RETRY_AFTER};
@@ -151,7 +400,7 @@ async fn partial_cold_start_keeps_the_only_successful_provider() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["refresh_succeeded"], true);
     assert_eq!(
-        data["sources"],
+        quote_values(&data),
         json!([{"source": "Gemini", "price_usd": 100_300.0}])
     );
     assert_eq!(data["average_price"], 100_300.0);
@@ -174,15 +423,254 @@ async fn partial_cold_start_keeps_the_only_successful_provider() {
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
     let (_, cached) = app.price().await;
     assert_eq!(cached["warnings"], data["warnings"]);
-    assert_eq!(cached["sources"], data["sources"]);
+    assert_eq!(quote_values(&cached), quote_values(&data));
     assert_eq!(cached["refresh_succeeded"], false);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
 }
 
 #[tokio::test]
-async fn total_provider_failure_preserves_the_database_and_reports_every_error() {
-    for seeded in [false, true] {
+async fn invalid_provider_data_retains_valid_observations_and_records_failure_health() {
+    use crate::{models::source_contract::LastAttempt, storage::load_price_state};
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    let before = load_price_state(app.state.db_path.clone()).await.unwrap();
+    for (source, body) in [
+        (UpstreamSource::CoinGecko, json!({"bitcoin": {"usd": -1}})),
+        (
+            UpstreamSource::Coinbase,
+            json!({"data": {"base": "ETH", "currency": "USD", "amount": "1000"}}),
+        ),
+        (
+            UpstreamSource::Kraken,
+            json!({"error": ["EGeneral:bad response"], "result": {"XXBTZUSD": {"c": ["100000"]}}}),
+        ),
+        (
+            UpstreamSource::Gemini,
+            json!({"symbol": "ETHUSD", "bid": "1000"}),
+        ),
+    ] {
+        app.upstreams
+            .provider(source)
+            .set_response(FixtureResponse::json(body));
+    }
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(false).await;
+    app.presence(true).await;
+    let (_, failed) = app.price().await;
+    assert_eq!(failed["refresh_succeeded"], false);
+    let stored = load_price_state(app.state.db_path.clone()).await.unwrap();
+    assert_eq!(stored.snapshot, before.snapshot);
+    assert!(stored.provider_health.iter().all(|health| matches!(health.last_attempt, LastAttempt::Failure { attempted_at_unix, .. } if attempted_at_unix == TEST_NOW + 10)));
+    for (source, body) in [
+        (
+            UpstreamSource::CoinGecko,
+            json!({"bitcoin": {"usd": 100000}}),
+        ),
+        (
+            UpstreamSource::Coinbase,
+            json!({"data": {"base": "BTC", "currency": "USD", "amount": "100100"}}),
+        ),
+        (
+            UpstreamSource::Kraken,
+            json!({"error": [], "result": {"XXBTZUSD": {"c": ["100200"]}}}),
+        ),
+        (
+            UpstreamSource::Gemini,
+            json!({"symbol": "BTCUSD", "bid": "100300"}),
+        ),
+    ] {
+        app.upstreams
+            .provider(source)
+            .set_response(FixtureResponse::json(body));
+    }
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(false).await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    let recovered = load_price_state(app.state.db_path.clone()).await.unwrap();
+    assert!(recovered.provider_health.iter().all(|health| matches!(health.last_attempt, LastAttempt::Success { attempted_at_unix } if attempted_at_unix == TEST_NOW + 20)));
+}
+
+#[tokio::test]
+async fn invalid_retained_quote_is_excluded_when_healthy_providers_refresh() {
+    use crate::storage::load_price_state;
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute(
+        "UPDATE source_prices SET price_usd = -1 WHERE source = 'CoinGecko'",
+        [],
+    )
+    .unwrap();
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({})));
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(false).await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    let stored = load_price_state(app.state.db_path.clone()).await.unwrap();
+    let quotes = stored.snapshot.unwrap().sources;
+    assert_eq!(quotes.len(), 3);
+    assert!(
+        quotes
+            .iter()
+            .all(|quote| quote.source != "CoinGecko" && quote.price_usd > 0.0)
+    );
+}
+
+#[tokio::test]
+async fn partial_refresh_preserves_failed_quote_observation_and_health_survives_restart() {
+    use crate::{
+        models::source_contract::{LastAttempt, QuoteKind},
+        storage::load_price_state,
+    };
+
+    let mut app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    let original = load_price_state(app.state.db_path.clone()).await.unwrap();
+    let old_quotes = &original.snapshot.as_ref().unwrap().sources;
+    assert!(
+        old_quotes
+            .iter()
+            .all(|quote| quote.last_success_at_unix == Some(TEST_NOW))
+    );
+    assert_eq!(
+        old_quotes
+            .iter()
+            .map(|quote| quote.quote_kind)
+            .collect::<Vec<_>>(),
+        [
+            QuoteKind::Aggregate,
+            QuoteKind::Spot,
+            QuoteKind::LastTrade,
+            QuoteKind::Bid
+        ]
+    );
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({})));
+    for step in 1..=2 {
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(false).await;
+        app.presence(true).await;
+        let (_, data) = app.price().await;
+        assert_eq!(data["refresh_succeeded"], true);
+        let stored = load_price_state(app.state.db_path.clone()).await.unwrap();
+        let quotes = &stored.snapshot.as_ref().unwrap().sources;
+        assert_eq!(quotes[0], old_quotes[0]);
+        assert!(
+            quotes[1..]
+                .iter()
+                .all(|quote| quote.last_success_at_unix == Some(TEST_NOW + step * 10))
+        );
+        assert!(
+            matches!(stored.provider_health[0].last_attempt, LastAttempt::Failure { attempted_at_unix, .. } if attempted_at_unix == TEST_NOW + step * 10)
+        );
+        assert_eq!(
+            serde_json::to_value(&stored.provider_health).unwrap(),
+            data["provider_health"]
+        );
+    }
+    let before_restart = load_price_state(app.state.db_path.clone()).await.unwrap();
+    app.restart().await;
+    assert_eq!(
+        load_price_state(app.state.db_path.clone()).await.unwrap(),
+        before_restart
+    );
+    let (_, dormant) = app.price().await;
+    assert_eq!(
+        dormant["provider_health"],
+        serde_json::to_value(&before_restart.provider_health).unwrap()
+    );
+    // A later successful observation replaces only that provider's quote and clears its error.
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(true).await;
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": 123456}})));
+    app.price().await;
+    let recovered = load_price_state(app.state.db_path.clone()).await.unwrap();
+    assert_eq!(
+        recovered.snapshot.unwrap().sources[0].last_success_at_unix,
+        Some(TEST_NOW + 30)
+    );
+    assert_eq!(
+        recovered.provider_health[0].last_attempt,
+        LastAttempt::Success {
+            attempted_at_unix: TEST_NOW + 30
+        }
+    );
+}
+
+#[tokio::test]
+async fn health_write_failure_rolls_back_quotes_and_all_health_updates() {
+    use crate::storage::load_price_state;
+
+    for health_only in [false, true] {
         let app = TestApp::new().await;
+        app.presence(true).await;
+        app.price().await;
+        let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_health BEFORE UPDATE ON provider_health
+             WHEN NEW.source = 'Gemini'
+             BEGIN SELECT RAISE(ABORT, 'private health error at /private/prices.db'); END;",
+        )
+        .unwrap();
+        if health_only {
+            for source in UpstreamSource::ALL {
+                app.upstreams
+                    .provider(source)
+                    .set_response(FixtureResponse::json(json!({})));
+            }
+        }
+        let before = load_price_state(app.state.db_path.clone()).await.unwrap();
+        let bytes = std::fs::read(&app.state.db_path).unwrap();
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(false).await;
+        app.presence(true).await;
+        let (_, failed) = app.price().await;
+        assert_eq!(failed["refresh_succeeded"], false);
+        assert!(
+            failed["warnings"]
+                .to_string()
+                .contains("Failed to store refreshed price data")
+        );
+        assert!(!failed.to_string().contains("private"));
+        assert_eq!(
+            load_price_state(app.state.db_path.clone()).await.unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(&app.state.db_path).unwrap(), bytes);
+        assert_eq!(app.upstreams.request_counts(), [2; 4]);
+        app.price().await;
+        assert_eq!(app.upstreams.request_counts(), [2; 4]);
+        conn.execute_batch("DROP TRIGGER reject_health;").unwrap();
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(false).await;
+        app.presence(true).await;
+        let (_, retried) = app.price().await;
+        assert!(!retried["warnings"].to_string().contains("Failed to store"));
+        assert_ne!(
+            load_price_state(app.state.db_path.clone())
+                .await
+                .unwrap()
+                .provider_health,
+            before.provider_health
+        );
+    }
+}
+
+#[tokio::test]
+async fn total_provider_failure_preserves_quotes_and_persists_every_error() {
+    for seeded in [false, true] {
+        let mut app = TestApp::new().await;
         app.presence(true).await;
         if seeded {
             // Include a warning in the stored snapshot so preservation covers metadata too.
@@ -199,7 +687,9 @@ async fn total_provider_failure_preserves_the_database_and_reports_every_error()
                 .provider(source)
                 .set_response(FixtureResponse::json(json!({})));
         }
-        let before = std::fs::read(&app.state.db_path).unwrap();
+        let before = load_latest_snapshot(app.state.db_path.clone())
+            .await
+            .unwrap();
         let (status, data) = app.price().await;
         assert_eq!(
             status,
@@ -210,7 +700,24 @@ async fn total_provider_failure_preserves_the_database_and_reports_every_error()
             }
         );
         assert_eq!(data["refresh_succeeded"], false);
-        assert_eq!(std::fs::read(&app.state.db_path).unwrap(), before);
+        assert_eq!(
+            load_latest_snapshot(app.state.db_path.clone())
+                .await
+                .unwrap(),
+            before
+        );
+        let persisted = crate::storage::load_price_state(app.state.db_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&persisted.provider_health).unwrap(),
+            data["provider_health"]
+        );
+        assert_eq!(persisted.provider_health.len(), 4);
+        assert!(persisted.provider_health.iter().all(|health| matches!(
+            health.last_attempt,
+            crate::models::source_contract::LastAttempt::Failure { .. }
+        )));
         for source in UpstreamSource::ALL {
             assert!(
                 data["warnings"]
@@ -226,6 +733,10 @@ async fn total_provider_failure_preserves_the_database_and_reports_every_error()
         );
         let counts = app.upstreams.request_counts();
         assert_eq!(app.price().await.1["refresh_succeeded"], false);
+        assert_eq!(app.upstreams.request_counts(), counts);
+        app.restart().await;
+        let (_, after_restart) = app.price().await;
+        assert_eq!(after_restart["provider_health"], data["provider_health"]);
         assert_eq!(app.upstreams.request_counts(), counts);
     }
 }
@@ -246,7 +757,9 @@ async fn partial_refresh_write_failure_preserves_quotes_and_both_error_types() {
         .set_response(FixtureResponse::json(json!({})));
     app.upstreams
         .provider(UpstreamSource::Coinbase)
-        .set_response(FixtureResponse::json(json!({"data": {"amount": "120000"}})));
+        .set_response(FixtureResponse::json(
+            json!({"data": {"base": "BTC", "currency": "USD", "amount": "120000"}}),
+        ));
     app.presence(false).await;
     app.clock.advance(Duration::from_secs(10));
     app.presence(true).await;
@@ -254,7 +767,7 @@ async fn partial_refresh_write_failure_preserves_quotes_and_both_error_types() {
     let (status, data) = app.price().await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["refresh_succeeded"], false);
-    assert_eq!(data["sources"], original["sources"]);
+    assert_eq!(quote_values(&data), quote_values(&original));
     assert_eq!(data["fetched_at_unix"], TEST_NOW);
     assert_eq!(std::fs::read(&app.state.db_path).unwrap(), before);
     assert_eq!(data["warnings"].as_array().unwrap().len(), 2);
@@ -305,7 +818,7 @@ async fn full_refresh_timeout_keeps_three_successful_quotes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["refresh_succeeded"], true);
     assert_eq!(
-        data["sources"],
+        quote_values(&data),
         json!([
             {"source": "Coinbase", "price_usd": 100_100.0},
             {"source": "Kraken", "price_usd": 100_200.0},
@@ -330,7 +843,7 @@ async fn partial_full_refresh_merges_successes_with_retained_quotes() {
     app.upstreams
         .provider(UpstreamSource::Kraken)
         .set_response(FixtureResponse::json(
-            json!({"result": {"XXBTZUSD": {"c": ["110200"]}}}),
+            json!({"error": [], "result": {"XXBTZUSD": {"c": ["110200"]}}}),
         ));
     for source in [UpstreamSource::Coinbase, UpstreamSource::Gemini] {
         app.upstreams
@@ -344,7 +857,7 @@ async fn partial_full_refresh_merges_successes_with_retained_quotes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["refresh_succeeded"], true);
     assert_eq!(
-        data["sources"],
+        quote_values(&data),
         json!([
             {"source": "CoinGecko", "price_usd": 110_000.0},
             {"source": "Coinbase", "price_usd": 100_100.0},
@@ -422,7 +935,7 @@ async fn concurrent_cold_start_returns_unavailable_without_waiting() {
         .await
         .expect("cold reader completed while refresh remained held");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(data["sources"], json!([]));
+    assert_eq!(quote_values(&data), json!([]));
     assert!(
         data["refresh_skipped_reason"]
             .as_str()
@@ -601,7 +1114,7 @@ async fn no_viewers_never_request_upstreams() {
     let app = TestApp::new().await;
     let (status, data) = app.price().await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(data["sources"], json!([]));
+    assert_eq!(quote_values(&data), json!([]));
     assert_eq!(data["active_viewers"], 0);
     assert_eq!(app.upstreams.request_counts(), [0; 4]);
 
@@ -613,7 +1126,8 @@ async fn no_viewers_never_request_upstreams() {
     let (status, data) = app.price().await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["active_viewers"], 0);
-    assert_eq!(data["stale"], true);
+    assert_eq!(data["stale"], false);
+    assert_eq!(data["status"], "LIVE");
     assert_eq!(data["average_price"], 100_150.0);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
 }
@@ -626,14 +1140,14 @@ async fn fresh_snapshot_after_restart_defers_pending_full_refresh_until_ten_seco
     app.restart().await;
     let (_, dormant) = app.price().await;
     assert_eq!(dormant["active_viewers"], 0);
-    assert_eq!(dormant["sources"], original["sources"]);
+    assert_eq!(quote_values(&dormant), quote_values(&original));
     app.presence(true).await;
     for elapsed in [0, 9] {
         app.clock.advance(Duration::from_secs(elapsed));
         let (_, cached) = app.price().await;
         assert_eq!(cached["refresh_succeeded"], false);
         assert_eq!(cached["fetched_at_unix"], TEST_NOW);
-        assert_eq!(cached["sources"], original["sources"]);
+        assert_eq!(quote_values(&cached), quote_values(&original));
         assert_eq!(app.upstreams.request_counts(), [1; 4]);
     }
     app.clock.advance(Duration::from_secs(1));
@@ -662,7 +1176,7 @@ async fn restart_resets_retry_state_but_preserves_partial_snapshot_success_gate(
     app.restart().await;
     app.presence(true).await;
     let (_, cached) = app.price().await;
-    assert_eq!(cached["sources"], partial["sources"]);
+    assert_eq!(quote_values(&cached), quote_values(&partial));
     assert_eq!(cached["warnings"], partial["warnings"]);
     assert_eq!(cached["refresh_succeeded"], false);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
@@ -722,7 +1236,7 @@ async fn local_providers_and_manual_time_drive_refresh_and_cache_age() {
     assert_eq!(data["average_price"], 100_150.0);
     assert_eq!(data["spread"], 300.0);
     assert_eq!(
-        data["sources"],
+        quote_values(&data),
         json!([
             {"source": "CoinGecko", "price_usd": 100_000.0},
             {"source": "Coinbase", "price_usd": 100_100.0},

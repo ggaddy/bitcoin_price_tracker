@@ -1,13 +1,10 @@
 # Source observations and freshness contract
 
-This is the P3.1 contract for the remaining P3 implementation. Its Rust types are
-in `src/models/source_contract.rs`. SQLite schema version 1 now provides the
-observation and health columns. Current routes still use the existing models;
-P3.3 records observations and health, and P3.5 switches responses to the
-freshness-aware model. The scoped
-dead-code allowance on this module is temporary and should be removed during
-that integration. The types' serialization tests verify the proposed JSON shape,
-not the live route's freshness behavior.
+The active API contract is defined in `src/models/source_contract.rs`.
+SQLite schema version 1 stores observations and provider health atomically.
+Responses evaluate per-source freshness, status, coverage, and aggregates at
+request time in `src/freshness.rs`; persisted snapshot summaries are not reused.
+Serialization and route tests verify the wire format and runtime behavior.
 
 ## Schema migration
 
@@ -26,9 +23,11 @@ and error combinations. Health is independent of snapshot deletion and starts
 as unknown for all four configured providers, even in an empty database.
 
 Repeat startup preserves version-1 metadata and applies the existing latest-only
-retention policy. P3.3 will populate metadata through normal refreshes; until then,
-the existing quote writer uses null/unknown column defaults and does not update
-provider health. Live response behavior is unchanged by this migration.
+retention policy. Normal refreshes now persist each successful provider's own
+observation time and quote kind, alongside outcomes for all attempted providers.
+An all-failure batch updates health without rewriting quote rows or snapshot
+metadata. Reading snapshot metadata, quotes, and provider health uses one
+transaction, even when only failure health exists in an otherwise empty database.
 
 ## Persisted observations
 
@@ -56,8 +55,13 @@ contribute to configured-provider coverage or aggregates.
 | Unrecognized legacy source | `unknown` | Quote semantics not established |
 
 The combined number is an **indicative average**, since these are different
-quote types. Pair validation and provider-specific payload handling belong to
-P3.4; these labels do not imply those checks are already implemented.
+quote types. The dashboard now labels it accordingly. P3.4 validates providers
+against the documented payloads:
+
+- [Coinbase spot prices](https://docs.cdp.coinbase.com/coinbase-business/track-apis/prices): request `/v2/prices/BTC-USD/spot`, require USD currency, and validate BTC base whenever that optional field is present. The documented response can omit base.
+- [Kraken ticker](https://docs.kraken.com/api-reference/market-data/get-ticker-information): require an empty error array and select the default internal BTC/USD result key `XXBTZUSD` explicitly, regardless of other returned markets.
+- [Gemini ticker v2](https://developer.gemini.com/rest/market-data): require the BTCUSD symbol and read its bid. Matching the symbol is case-insensitive.
+- CoinGecko continues to select numeric `bitcoin.usd` explicitly. All adapters reject nonfinite/nonpositive prices. Storage also rejects invalid quote values, and new snapshot merges omit invalid retained rows.
 
 `ProviderHealth` is stored independently of the quote. There is one latest
 record per configured provider, including providers that have never supplied a
@@ -86,7 +90,7 @@ deadlines are not part of this persisted/public health contract.
 Snapshot `fetched_at_unix`, saved averages/spreads, batch warnings, and refreshed
 source metadata remain persistence metadata. They must not be interpreted as
 current per-source freshness. A batch with only provider failures updates health
-without advancing the quote snapshot timestamp. P3.3 must read quotes and health
+without advancing the quote snapshot timestamp. Quotes and health are read
 together in the transaction established by P1.
 
 ## Computed response fields
@@ -118,7 +122,8 @@ Add `coverage` with `configured_source_count` (currently 4),
 `fresh_source_count`, and `contributing_sources`. Contributors are unique names in
 configured provider order, and their length equals `fresh_source_count`, which
 cannot exceed `configured_source_count`. Retained unrecognized legacy rows do not
-inflate either count. The count pair expresses aggregate coverage without a
+inflate either count. If legacy duplicates exist, the newest qualifying observation
+for each provider contributes once. The count pair expresses aggregate coverage without a
 redundant floating-point percentage.
 
 `average_price` and `spread` are computed only from contributing quotes. One
@@ -134,6 +139,9 @@ these response values. Expose `source_max_age_seconds: 90` and
 | `STALE` | Retained valid quotes exist, but no contributors | true |
 | `UNAVAILABLE` | No valid quote is available | true |
 
+A refresh inspection/persistence error also changes an otherwise LIVE response
+to DEGRADED, even when the previous stored health remains successful.
+
 Preserve HTTP 200 when a valid retained quote exists, even if its aggregate is
 null and status is STALE. Return 503 with UNAVAILABLE when no valid quote exists.
 A local database read failure remains HTTP 500 with UNAVAILABLE and a safe
@@ -146,13 +154,20 @@ and zero/null empty-snapshot values. `refresh_succeeded` still means at least on
 new quote was committed, and can be true with DEGRADED status. It is false for an
 all-failure health-only update. Heartbeat counts, warnings, and refresh skip reasons
 keep their existing types. Older clients that require exact source-object shapes
-will need to accept the additional metadata fields when P3.5 activates them.
+must accept the additional metadata fields.
 
 ## Integration checks
 
-P3.2/P3.3 must verify migration rollback, null legacy observation times, repeat
-startup, independent health for providers without quotes, atomic quote/health
-writes, and persistence across restart. P3.5/P3.6 must exercise unknown/future
-timestamps, the exact 90-second boundary, partial coverage, fresh retained quotes
-after failure, all-failure batches, all four statuses, JSON nullability, and the
-HTTP rules above through the real routes. P4 will consume these fields in the UI.
+Tests cover migration rollback, null legacy observation times, repeat startup,
+independent health for providers without quotes, atomic quote/health writes,
+and persistence across restart. Route tests cover unknown/future timestamps,
+the exact 90-second boundary, partial coverage, fresh retained quotes after
+failure, all-failure batches, status, and nullable aggregates. Evaluator tests
+cover duplicate/unrecognized providers, invalid values, and extreme finite prices.
+P3.6 verifies the migration/recovery matrix and JSON contract assertions.
+Both legacy schema variants are exercised through migration, unknown-age serving,
+partial refresh, restart, expiration, full recovery, and another restart. Empty
+and failed cold starts return 503 with independent health; unreadable storage
+returns 500 without exposing internal details.
+P4 adds per-source metadata and coverage to the dashboard; its status badge
+already consumes the server's explicit status.

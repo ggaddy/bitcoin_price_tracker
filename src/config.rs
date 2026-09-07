@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use reqwest::{Client, ClientBuilder};
 
 pub(crate) const REFRESH_INTERVAL_SECONDS: i64 = 10;
+pub(crate) const SOURCE_MAX_AGE_SECONDS: u64 = 90;
 pub(crate) const VIEWER_TTL_SECONDS: i64 = 15;
 pub(crate) const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,7 +28,7 @@ impl Default for UpstreamEndpoints {
             coingecko:
                 "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
                     .to_string(),
-            coinbase: "https://api.coinbase.com/v2/prices/spot?currency=USD".to_string(),
+            coinbase: "https://api.coinbase.com/v2/prices/BTC-USD/spot".to_string(),
             kraken: "https://api.kraken.com/0/public/Ticker?pair=XBTUSD".to_string(),
             gemini: "https://api.gemini.com/v2/ticker/btcusd".to_string(),
         }
