@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use crate::{
     config::{REFRESH_INTERVAL_SECONDS, VIEWER_TTL_SECONDS},
@@ -8,8 +9,8 @@ use crate::{
 };
 
 pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePayload) -> usize {
-    let now = state.clock.now_unix();
     let mut viewers = state.viewers.lock().await;
+    let now = state.clock.now_monotonic();
     prune_inactive_viewers(&mut viewers, now);
     let previously_empty = viewers.is_empty();
 
@@ -27,18 +28,22 @@ pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePay
 }
 
 pub(crate) async fn active_viewer_count(state: &AppState) -> usize {
-    let now = state.clock.now_unix();
     let mut viewers = state.viewers.lock().await;
+    let now = state.clock.now_monotonic();
     prune_inactive_viewers(&mut viewers, now);
     viewers.len()
 }
 
-pub(crate) fn prune_inactive_viewers(viewers: &mut HashMap<String, i64>, now: i64) {
-    viewers.retain(|_, last_seen| now.saturating_sub(*last_seen) <= VIEWER_TTL_SECONDS);
+pub(crate) fn prune_inactive_viewers(viewers: &mut HashMap<String, Instant>, now: Instant) {
+    let ttl = Duration::from_secs(VIEWER_TTL_SECONDS as u64);
+    viewers.retain(|_, last_seen| now.saturating_duration_since(*last_seen) <= ttl);
 }
 
 pub(crate) fn snapshot_age_seconds(snapshot: &SnapshotRecord, now: i64) -> Option<i64> {
-    Some(now.saturating_sub(snapshot.fetched_at_unix))
+    // Future timestamps have unknown age; they must not suppress refresh forever
+    // after the system clock moves backward or a database is copied from elsewhere.
+    now.checked_sub(snapshot.fetched_at_unix)
+        .filter(|age| *age >= 0)
 }
 
 pub(crate) fn refresh_skip_reason(
@@ -100,12 +105,16 @@ mod tests {
 
     #[test]
     fn inactive_viewers_are_pruned() {
+        let now = std::time::Instant::now();
         let mut viewers = HashMap::from([
-            ("active".to_string(), 100),
-            ("stale".to_string(), 100 - VIEWER_TTL_SECONDS - 1),
+            ("active".to_string(), now),
+            (
+                "stale".to_string(),
+                now - std::time::Duration::from_secs(VIEWER_TTL_SECONDS as u64 + 1),
+            ),
         ]);
 
-        prune_inactive_viewers(&mut viewers, 100);
+        prune_inactive_viewers(&mut viewers, now);
 
         assert!(viewers.contains_key("active"));
         assert!(!viewers.contains_key("stale"));

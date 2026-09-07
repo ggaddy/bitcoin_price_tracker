@@ -12,6 +12,7 @@ binary, so styling works without a CDN or a frontend build step.
 - Stores prices in local SQLite
 - Serves the latest stored snapshot to the UI
 - Refreshes only while a visible tab is active
+- Tracks viewer heartbeats with monotonic time: viewers remain active through 15 seconds and expire immediately after that, independent of system clock adjustments
 - Rotates upstream checks one source at a time, advancing after failed attempts too
 - Skips refreshes when the latest snapshot is under 10 seconds old or the previous attempt started less than 10 seconds ago
 - Backs off failed providers for 10, 20, 40, 80, 160, then 300 seconds; successful provider recovery resets the delay
@@ -29,6 +30,12 @@ unrepresentably large retry hints fall back to exponential backoff. When every
 provider is cooling down, requests serve stored data without consuming another
 attempt. Retry state is process-local and resets on restart; the persisted
 snapshot still supplies the ten-second success-age gate.
+
+Presence is rechecked after reading the snapshot and before dispatching providers.
+Already dispatched work may finish and save prices after the last viewer leaves;
+the response reports the current viewer count. Future snapshot timestamps have
+unknown age (`fetched_age_seconds: null`) and are treated as stale, while the
+monotonic attempt gate still prevents rapid retries.
 
 ## Local
 

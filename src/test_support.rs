@@ -30,24 +30,36 @@ use crate::{
 
 pub(crate) const TEST_NOW: i64 = 1_700_000_000;
 
-pub(crate) struct ManualClock(AtomicI64, Instant);
+pub(crate) struct ManualClock {
+    unix: AtomicI64,
+    monotonic: Mutex<Instant>,
+}
 
 impl ManualClock {
     pub(crate) fn advance(&self, duration: Duration) {
-        self.0.fetch_add(
+        self.unix.fetch_add(
             i64::try_from(duration.as_secs()).expect("test clock advance fits in i64"),
             Ordering::SeqCst,
         );
+        self.advance_monotonic(duration);
+    }
+
+    pub(crate) fn advance_monotonic(&self, duration: Duration) {
+        *self.monotonic.lock().unwrap() += duration;
+    }
+
+    pub(crate) fn set_unix(&self, now: i64) {
+        self.unix.store(now, Ordering::SeqCst);
     }
 }
 
 impl Clock for ManualClock {
     fn now_monotonic(&self) -> Instant {
-        self.1 + Duration::from_secs((self.now_unix() - TEST_NOW) as u64)
+        *self.monotonic.lock().unwrap()
     }
 
     fn now_unix(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
+        self.unix.load(Ordering::SeqCst)
     }
 }
 
@@ -235,7 +247,10 @@ impl TestApp {
         let db_path = database.0.join("prices.db");
         init_db(db_path.clone()).await.unwrap();
         let upstreams = MockUpstreams::start().await;
-        let clock = Arc::new(ManualClock(AtomicI64::new(TEST_NOW), Instant::now()));
+        let clock = Arc::new(ManualClock {
+            unix: AtomicI64::new(TEST_NOW),
+            monotonic: Mutex::new(Instant::now()),
+        });
         let client = upstream_client_builder().no_proxy().build().unwrap();
         let state =
             AppState::with_dependencies(client, db_path, upstreams.endpoints(), clock.clone());
@@ -249,14 +264,30 @@ impl TestApp {
     }
 
     pub(crate) async fn presence(&self, active: bool) {
+        self.presence_for("test-viewer", active).await;
+    }
+
+    pub(crate) async fn presence_for(&self, session_id: &str, active: bool) {
         let (status, _) = self
             .request(
                 Method::POST,
                 "/api/presence",
-                Some(json!({"session_id": "test-viewer", "active": active})),
+                Some(json!({"session_id": session_id, "active": active})),
             )
             .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    // Rebuild process-local state around the same database and fixture endpoints.
+    pub(crate) async fn restart(&mut self) {
+        init_db(self.state.db_path.clone()).await.unwrap();
+        self.state = AppState::with_dependencies(
+            self.state.client.clone(),
+            self.state.db_path.clone(),
+            self.upstreams.endpoints(),
+            self.clock.clone(),
+        );
+        self.router = router(self.state.clone());
     }
 
     pub(crate) async fn price(&self) -> (StatusCode, Value) {

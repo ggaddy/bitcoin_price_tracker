@@ -1,17 +1,17 @@
 **Project audit and improvement plan — September 6, 2026**
 
-Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is committed as `0fdc65f`. P2.3 is committed as `4f850bd`. P2.4 is committed as `47a5c6a`. P2.5 is implemented and verified in the working tree, not yet committed.
+Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is committed as `0fdc65f`. P2.3 is committed as `4f850bd`. P2.4 is committed as `47a5c6a`. P2.5 is committed as `aa5e520` and released as `v2.4.9`. P2.6 and P2.7 are implemented and verified in the working tree, not yet committed.
 
 The project is a compact Rust/Axum application with a self-contained dashboard, four upstream providers, and SQLite persistence. Its module boundaries are reasonable for its size. The most valuable improvements concern refresh reliability and the accuracy of the data shown to users.
 
 **Implementation progress — updated September 7, 2026**
 
-Audit and implementation planning are complete. Implementation: **9 of 30 tasks complete**. Next task: **P2.6 — correct presence timing**.
+Audit and implementation planning are complete. Implementation: **11 of 30 tasks complete**. P2 is complete. Next task: **P3.1 — define the source contract**.
 
 | Phase | Status | Tasks complete | Depends on | Completion evidence |
 | --- | --- | --- | --- | --- |
 | P1 — Consistent SQLite reads | Complete | 4/4 | None | Race reproduced before the fix; all 5 storage tests pass; full suite 10 passed / 1 ignored; formatting and Clippy pass |
-| P2 — Refresh reliability | In progress | 5/7 | P1 | P2.1–P2.5 complete, including provider backoff and retry scheduling; full suite 42 passed / 1 ignored; formatting and Clippy pass |
+| P2 — Refresh reliability | Complete | 7/7 | P1 | Failure matrix verified, including restart and request bursts; full suite 50 passed / 1 ignored; formatting and Clippy pass |
 | P3 — Source freshness and validation | Not started | 0/6 | P2 | — |
 | P4 — Dashboard resilience | Not started | 0/6 | P3 for freshness display; lifecycle work can start earlier | — |
 | P5 — Delivery and deployment | Not started | 0/7 | Final verification depends on P1–P4; CI can start with P1 | — |
@@ -104,8 +104,8 @@ Files: `src/config.rs`, `src/state.rs`, `src/main.rs`, `src/handlers.rs`, `src/p
 - [x] **P2.3 — Introduce explicit refresh coordination.** Replace success-only scheduling with coordinator state for rotation, attempt timing, and provider retry eligibility. Use `try_lock` or equivalent ownership so another request cannot queue behind upstream work. On contention, return the database snapshot with a refresh-in-progress reason. Capture the pending full-refresh generation so completing an older batch cannot clear a newer activation. Derive response viewer counts from current presence after work completes.
 - [x] **P2.4 — Keep partial successes.** Replace fail-fast all-provider joining with collection of each provider's result. Merge successes with retained quotes and record failures individually. Advance the cursor after an attempted provider even on failure. Keep the previous quote snapshot intact if no provider succeeds; a database failure must not count as a successful refresh or remove attempt cooldowns.
 - [x] **P2.5 — Apply cadence and retry policy.** Implement both global gates and per-provider eligibility from the contract. Skip cooling-down providers when selecting the next source; do not consume an attempt when none are eligible. Parse supported `Retry-After` forms defensively, never retry in a tight loop, and reset failure counts after successful recovery. Keep attempt/retry state in memory; P3 adds persisted health for display.
-- [ ] **P2.6 — Correct presence timing.** Use monotonic timestamps for heartbeats and expiry. Recheck presence before upstream dispatch and keep the viewer-map critical section short. Define consistent lock ordering so presence updates cannot deadlock with refresh coordination. Validate at the exact TTL boundary and after hide/show transitions.
-- [ ] **P2.7 — Verify the failure matrix.** Add route/coordinator tests for cold start, partial and total provider failure, timeout, rate limiting, retry expiry, rotation after failure, database write failure, concurrent callers, fresh data after restart, and zero viewers. Use barriers to prove a cached response completes while an upstream request remains deliberately stalled. Assert that failures do not increase attempt frequency with viewer count, and that a new activation during a batch remains pending.
+- [x] **P2.6 — Correct presence timing.** Use monotonic timestamps for heartbeats and expiry. Recheck presence before upstream dispatch and keep the viewer-map critical section short. Define consistent lock ordering so presence updates cannot deadlock with refresh coordination. Validate at the exact TTL boundary and after hide/show transitions.
+- [x] **P2.7 — Verify the failure matrix.** Add route/coordinator tests for cold start, partial and total provider failure, timeout, rate limiting, retry expiry, rotation after failure, database write failure, concurrent callers, fresh data after restart, and zero viewers. Use barriers to prove a cached response completes while an upstream request remains deliberately stalled. Assert that failures do not increase attempt frequency with viewer count, and that a new activation during a batch remains pending.
 
 P2.1 implementation evidence (September 6, 2026):
 
@@ -155,6 +155,38 @@ P2.5 implementation evidence (September 7, 2026):
 - Added route regressions `all_rate_limited_providers_wait_without_consuming_pending_activation` and `rate_limited_provider_does_not_block_healthy_rotation_or_lose_retry_on_write_failure`. Local HTTP fixtures exercise both retry header forms, repeated cache-only requests, exact retry expiry, preserved activation, recovery, healthy rotation, and a forced SQLite write failure. An initial test incorrectly expected a fixed HTTP-date hint to extend like a relative delay on later failures; the final test accounts for that date expiring and independently verifies recovery reset.
 - Final gates ran through Podman in an ephemeral `localhost/bitcoin-price-tracker-audit:local` container with Rust 1.85.1 and current workspace sources: `cargo fmt --all -- --check`, `cargo clippy --locked --release --all-targets -- -D warnings`, and `cargo test --locked --release` passed: **42 passed, 0 failed, 1 ignored**. `git diff --check` passed. Formatting also wrapped the existing stylesheet route in `src/app.rs`; its behavior is unchanged. No dependency or schema changes. Provider requests used loopback fixtures; Selenium and deployment checks were not run for this backend task. Changes remain uncommitted.
 - P2.6 is next for monotonic presence expiry and timestamp handling, followed by P2.7's remaining failure-matrix coverage. The dashboard changes and release workflow added since the baseline do not by themselves close the broader P4/P5 tasks.
+
+P2.6 implementation evidence (September 7, 2026):
+
+- Viewer timestamps now use `Instant` and elapsed monotonic durations. Both heartbeat updates and viewer counts sample time after acquiring the viewer lock, so waiting for the lock cannot stamp a heartbeat with old time or retain an expired viewer. The existing boundary is preserved precisely: active at 15 seconds, expired immediately afterward. `src/state.rs` documents the refresh-before-viewers lock order; presence only acquires the viewer lock, with no network/database I/O inside that guard.
+- The manual test clock now advances Unix and monotonic time independently, including nanosecond monotonic increments. Snapshot age uses checked subtraction and rejects future/overflowing ages as unknown. A future snapshot reports `fetched_age_seconds: null` and stale status without suppressing refresh indefinitely; the independent monotonic attempt gate remains in force. Per-source freshness remains P3 work.
+- Added five route regressions: `presence_ignores_wall_clock_jumps_and_expires_just_after_ttl`, `presence_samples_time_after_acquiring_the_viewer_lock`, `presence_expiring_during_database_inspection_prevents_dispatch`, `dispatched_batch_can_finish_after_viewers_expire`, and `future_snapshot_has_unknown_age_and_does_not_bypass_attempt_gate`. They cover forward/backward clock jumps, the exact TTL boundary, renewed activation and hide/show, lock contention, presence rechecking before dispatch, completion viewer counts, and backward-clock recovery. Explicit future polling, a held SQLite transaction, and provider semaphores make interleavings deterministic without sleeps or public provider traffic.
+- Final checks in an ephemeral Podman container using `localhost/bitcoin-price-tracker-audit:local`, Rust 1.85.1, and current workspace sources: `cargo fmt --all -- --check`, `cargo clippy --locked --release --all-targets -- -D warnings`, and `cargo test --locked --release` passed: **47 passed, 0 failed, 1 ignored**. `git diff --check` passed. README now documents presence expiry and unknown snapshot ages. No schema or dependency changes; Selenium and deployment checks were not run for this backend task. Changes remain uncommitted.
+- P2.7 is next: review the complete failure matrix and add any missing restart/concurrency coverage before closing P2.
+
+P2.7 implementation evidence (September 7, 2026):
+
+- Reviewed the P2 failure matrix against the existing deterministic tests and added the missing restart and multi-viewer cases. `TestApp::restart` rebuilds application state and routes around the same SQLite database, rerunning initialization while retaining local provider fixtures and controlled time. `presence_for` allows distinct test viewers. No production behavior changes were needed for this task.
+- `fresh_snapshot_after_restart_defers_pending_full_refresh_until_ten_seconds` verifies empty process-local presence after restart, persisted quote retention, no upstream requests at snapshot ages zero/nine, and a full refresh exactly at ten seconds. `restart_resets_retry_state_but_preserves_partial_snapshot_success_gate` verifies the same gate for partial data, retained warnings, reset process-local retry state, and recovery of a previously rate-limited provider.
+- `failed_attempt_frequency_does_not_increase_with_viewer_count_or_request_bursts` compares one viewer with 16 distinct viewers sending heartbeats and four concurrent price requests every five seconds. All providers fail. Both cases dispatch exactly one initial full batch and one rotating provider at each ten-second boundary; intermediate bursts never create extra attempts.
+- Final checks in an ephemeral Podman container using `localhost/bitcoin-price-tracker-audit:local`, Rust 1.85.1, and current workspace sources: `cargo fmt --all -- --check`, `cargo clippy --locked --release --all-targets -- -D warnings`, and `cargo test --locked --release` passed: **50 passed, 0 failed, 1 ignored**. `git diff --check` passed. All provider traffic used loopback fixtures; the ignored Selenium test and deployment checks remain outside this backend phase. P2.6/P2.7 changes remain uncommitted. P2 is complete; P3.1 is next.
+
+P2 acceptance coverage (tests in `src/api_tests.rs` unless otherwise noted):
+
+| Scenario | Evidence |
+| --- | --- |
+| Cold start / partial failure | `local_providers_and_manual_time_drive_refresh_and_cache_age`, `partial_cold_start_keeps_the_only_successful_provider`, `partial_full_refresh_merges_successes_with_retained_quotes` |
+| Total provider failure | `total_provider_failure_preserves_the_database_and_reports_every_error` |
+| Timeout / retained partial results | `timed_out_refresh_serves_the_previous_snapshot_and_releases_the_lock`, `full_refresh_timeout_keeps_three_successful_quotes`; connect, headers, and body deadlines in `pricing::tests` |
+| Rate limiting / retry expiry / recovery | `all_rate_limited_providers_wait_without_consuming_pending_activation`; exponential cap, recovery reset, and invalid hints in `refresh::tests` and `errors::tests` |
+| Rotation after failure | `failed_attempt_observes_cadence_and_advances_rotation`, `rate_limited_provider_does_not_block_healthy_rotation_or_lose_retry_on_write_failure` |
+| Database write failure | `partial_refresh_write_failure_preserves_quotes_and_both_error_types`, `storage_failure_warnings_hide_internal_details` |
+| Concurrent callers / cached progress | `cached_callers_finish_while_one_refresh_is_stalled`, `concurrent_cold_start_returns_unavailable_without_waiting`; provider semaphore stays held until cached responses complete |
+| Viewer count / failure frequency | `failed_attempt_frequency_does_not_increase_with_viewer_count_or_request_bursts` |
+| Activation during a batch / cancellation | `activation_during_batch_survives_completion_and_freshness_gate`, `cancelling_refresh_releases_ownership_and_retains_attempt_gate` |
+| Fresh data after restart | `fresh_snapshot_after_restart_defers_pending_full_refresh_until_ten_seconds`, `restart_resets_retry_state_but_preserves_partial_snapshot_success_gate` |
+| Zero viewers / expiry before dispatch | `no_viewers_never_request_upstreams`, `presence_expiring_during_database_inspection_prevents_dispatch`, `dispatched_batch_can_finish_after_viewers_expire` |
+| Clock changes / TTL / hide-show | `presence_ignores_wall_clock_jumps_and_expires_just_after_ttl`, `presence_samples_time_after_acquiring_the_viewer_lock`, `future_snapshot_has_unknown_age_and_does_not_bypass_attempt_gate` |
 
 **P3 — Per-source freshness and validated prices (6 tasks)**
 
@@ -221,6 +253,9 @@ Append one row per completed task or material decision. Keep historical baseline
 | 2026-09-06 | P2.3 | Added nonblocking coordination, activation generations, monotonic attempt gate, and rotation independent of successful persistence; progress 7/30 | Rust 1.85.1: full suite 32 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.4: keep partial provider successes |
 | 2026-09-06 | P2.3 commit recorded | P2.3 changes committed | `4f850bd` (`P2.3 complete`) | Continue P2.4 |
 | 2026-09-06 | P2.4 | Collect all provider results, retain partial successes, preserve snapshots on total failure, and report individual errors; progress 8/30 | Two regressions failed before the fix; Rust 1.85.1: full suite 37 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.5: apply cadence and retry policy |
+| 2026-09-07 | P2.5 completed/released | Provider backoff, retry hints, recovery reset, and cooling-provider selection; progress 9/30 | `aa5e520`, release `v2.4.9`; 42 passed / 1 ignored; formatting and Clippy pass | P2.6: correct presence timing |
+| 2026-09-07 | P2.6 | Monotonic viewer timestamps, time sampled under the viewer lock, future snapshot age correction, and five timing regressions; progress 10/30 | Rust 1.85.1: 47 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.7: verify the failure matrix |
+| 2026-09-07 | P2.7 / P2 complete | Added restart and multi-viewer failure cadence regressions; recorded complete failure matrix; progress 11/30 | Rust 1.85.1: 50 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P3.1: define the source contract |
 
 **Baseline validation performed — September 6, 2026**
 

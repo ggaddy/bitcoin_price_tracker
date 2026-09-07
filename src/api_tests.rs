@@ -619,6 +619,97 @@ async fn no_viewers_never_request_upstreams() {
 }
 
 #[tokio::test]
+async fn fresh_snapshot_after_restart_defers_pending_full_refresh_until_ten_seconds() {
+    let mut app = TestApp::new().await;
+    app.presence(true).await;
+    let (_, original) = app.price().await;
+    app.restart().await;
+    let (_, dormant) = app.price().await;
+    assert_eq!(dormant["active_viewers"], 0);
+    assert_eq!(dormant["sources"], original["sources"]);
+    app.presence(true).await;
+    for elapsed in [0, 9] {
+        app.clock.advance(Duration::from_secs(elapsed));
+        let (_, cached) = app.price().await;
+        assert_eq!(cached["refresh_succeeded"], false);
+        assert_eq!(cached["fetched_at_unix"], TEST_NOW);
+        assert_eq!(cached["sources"], original["sources"]);
+        assert_eq!(app.upstreams.request_counts(), [1; 4]);
+    }
+    app.clock.advance(Duration::from_secs(1));
+    let (_, refreshed) = app.price().await;
+    assert_eq!(refreshed["refresh_succeeded"], true);
+    assert_eq!(refreshed["fetched_at_unix"], TEST_NOW + 10);
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+}
+
+#[tokio::test]
+async fn restart_resets_retry_state_but_preserves_partial_snapshot_success_gate() {
+    use axum::http::{HeaderValue, header::RETRY_AFTER};
+
+    let mut app = TestApp::new().await;
+    let mut limited = FixtureResponse::json(json!({}));
+    limited.status = StatusCode::TOO_MANY_REQUESTS;
+    limited
+        .headers
+        .insert(RETRY_AFTER, HeaderValue::from_static("300"));
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(limited);
+    app.presence(true).await;
+    let (_, partial) = app.price().await;
+    assert_eq!(partial["sources"].as_array().unwrap().len(), 3);
+    app.restart().await;
+    app.presence(true).await;
+    let (_, cached) = app.price().await;
+    assert_eq!(cached["sources"], partial["sources"]);
+    assert_eq!(cached["warnings"], partial["warnings"]);
+    assert_eq!(cached["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": 100000}})));
+    app.clock.advance(Duration::from_secs(10));
+    let (_, recovered) = app.price().await;
+    assert_eq!(recovered["refresh_succeeded"], true);
+    assert_eq!(recovered["sources"].as_array().unwrap().len(), 4);
+    assert_eq!(recovered["warnings"], json!([]));
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+}
+
+#[tokio::test]
+async fn failed_attempt_frequency_does_not_increase_with_viewer_count_or_request_bursts() {
+    for viewer_count in [1, 16] {
+        let app = TestApp::new().await;
+        for source in UpstreamSource::ALL {
+            app.upstreams
+                .provider(source)
+                .set_response(FixtureResponse::json(json!({})));
+        }
+        for tick in 0..=8 {
+            if tick > 0 {
+                app.clock.advance(Duration::from_secs(5));
+            }
+            for viewer in 0..viewer_count {
+                app.presence_for(&format!("viewer-{viewer}"), true).await;
+            }
+            let (a, b, c, d) = tokio::join!(app.price(), app.price(), app.price(), app.price());
+            for (status, data) in [a, b, c, d] {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(data["active_viewers"], viewer_count);
+                assert_eq!(data["refresh_succeeded"], false);
+            }
+            let mut expected = [1; 4];
+            // One full batch at t=0, then exactly one provider at t=10/20/30/40.
+            for count in expected.iter_mut().take(tick / 2) {
+                *count += 1;
+            }
+            assert_eq!(app.upstreams.request_counts(), expected);
+        }
+    }
+}
+
+#[tokio::test]
 async fn local_providers_and_manual_time_drive_refresh_and_cache_age() {
     let app = TestApp::new().await;
     app.presence(true).await;
@@ -673,6 +764,160 @@ async fn manual_time_expires_presence_without_sleeping() {
     assert_eq!(data["fetched_age_seconds"], 16);
     assert_eq!(data["refresh_succeeded"], false);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn presence_ignores_wall_clock_jumps_and_expires_just_after_ttl() {
+    use std::sync::atomic::Ordering;
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    app.clock.set_unix(TEST_NOW + 86_400);
+    assert_eq!(active_viewer_count(&app.state).await, 1);
+    app.clock.set_unix(TEST_NOW - 86_400);
+    assert_eq!(active_viewer_count(&app.state).await, 1);
+    app.clock.advance_monotonic(Duration::from_secs(15));
+    assert_eq!(active_viewer_count(&app.state).await, 1);
+    app.clock.advance_monotonic(Duration::from_nanos(1));
+    let (_, expired) = app.price().await;
+    assert_eq!(expired["active_viewers"], 0);
+    assert_eq!(expired["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+
+    app.presence(true).await;
+    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 2);
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+    app.presence(false).await;
+    assert_eq!(active_viewer_count(&app.state).await, 0);
+    app.presence(true).await;
+    app.presence(true).await;
+    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 3);
+    // Hide/show requests a batch but still respects both cadence gates.
+    assert_eq!(app.price().await.1["refresh_succeeded"], false);
+    app.clock.advance(Duration::from_secs(10));
+    assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    assert_eq!(app.upstreams.request_counts(), [3; 4]);
+}
+
+#[tokio::test]
+async fn presence_samples_time_after_acquiring_the_viewer_lock() {
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    let guard = app.state.viewers.lock().await;
+    let count = active_viewer_count(&app.state);
+    tokio::pin!(count);
+    poll_fn(|cx| {
+        assert!(count.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    app.clock.advance_monotonic(Duration::from_secs(16));
+    drop(guard);
+    assert_eq!(count.await, 0);
+
+    let guard = app.state.viewers.lock().await;
+    let heartbeat = app.presence(true);
+    tokio::pin!(heartbeat);
+    poll_fn(|cx| {
+        assert!(heartbeat.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    app.clock.advance_monotonic(Duration::from_secs(16));
+    drop(guard);
+    heartbeat.await;
+    assert_eq!(active_viewer_count(&app.state).await, 1);
+    app.clock.advance_monotonic(Duration::from_secs(15));
+    assert_eq!(active_viewer_count(&app.state).await, 1);
+    app.clock.advance_monotonic(Duration::from_nanos(1));
+    assert_eq!(active_viewer_count(&app.state).await, 0);
+}
+
+#[tokio::test]
+async fn presence_expiring_during_database_inspection_prevents_dispatch() {
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    app.clock.advance(Duration::from_secs(10));
+    // Block snapshot inspection after the initial viewer check, before dispatch.
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+    let request = app.price();
+    tokio::pin!(request);
+    poll_fn(|cx| {
+        assert!(request.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(app.state.refresh.try_lock().is_err());
+    app.clock.advance_monotonic(Duration::from_secs(6));
+    conn.execute_batch("COMMIT;").unwrap();
+    let (_, data) = request.await;
+    assert_eq!(data["active_viewers"], 0);
+    assert!(
+        data["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("no active viewers")
+    );
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn dispatched_batch_can_finish_after_viewers_expire() {
+    let app = TestApp::new().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    app.presence(true).await;
+    let request = app.price();
+    tokio::pin!(request);
+    tokio::select! {
+        _ = provider.wait_for_request() => {}
+        _ = &mut request => panic!("batch completed before provider release"),
+    }
+    app.clock.advance_monotonic(Duration::from_secs(16));
+    assert_eq!(active_viewer_count(&app.state).await, 0);
+    release.add_permits(1);
+    let (_, completed) = request.await;
+    assert_eq!(completed["active_viewers"], 0);
+    assert_eq!(completed["refresh_succeeded"], true);
+    assert_eq!(app.price().await.1["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn future_snapshot_has_unknown_age_and_does_not_bypass_attempt_gate() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    app.clock.set_unix(TEST_NOW - 3600);
+    let (_, cached) = app.price().await;
+    assert_eq!(cached["fetched_age_seconds"], serde_json::Value::Null);
+    assert_eq!(cached["stale"], true);
+    assert_eq!(cached["refresh_succeeded"], false);
+    assert!(
+        cached["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("last attempt")
+    );
+    app.clock.advance_monotonic(Duration::from_secs(10));
+    let (_, recovered) = app.price().await;
+    assert_eq!(recovered["refresh_succeeded"], true);
+    assert_eq!(recovered["fetched_at_unix"], TEST_NOW - 3600);
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
 }
 
 #[tokio::test]

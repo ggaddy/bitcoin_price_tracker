@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
+    time::Instant,
 };
 use tokio::sync::Mutex;
 
@@ -18,7 +19,9 @@ pub(crate) struct AppState {
     pub(crate) db_path: PathBuf,
     pub(crate) endpoints: Arc<UpstreamEndpoints>,
     pub(crate) clock: Arc<dyn Clock>,
-    pub(crate) viewers: Arc<Mutex<HashMap<String, i64>>>,
+    // If both locks are needed, acquire refresh before viewers. Presence only
+    // acquires viewers, and that guard must never span network or database I/O.
+    pub(crate) viewers: Arc<Mutex<HashMap<String, Instant>>>,
     pub(crate) refresh: Arc<Mutex<RefreshCoordinator>>,
     pub(crate) full_refresh_generation: Arc<AtomicU64>,
 }
