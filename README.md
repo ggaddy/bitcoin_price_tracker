@@ -1,6 +1,10 @@
 # Bitcoin Price Tracker
 
-Rust BTC/USD tracker with a terminal-style UI.
+Rust BTC/USD tracker with a responsive Cybercore dashboard.
+
+The UI uses [Cybercore CSS](https://github.com/sebyx07/cybercore-css/) 0.3.0.
+Its stylesheet and MIT license are vendored in `src/vendor` and embedded in the
+binary, so styling works without a CDN or a frontend build step.
 
 ## Behavior
 
