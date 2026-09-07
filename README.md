@@ -33,6 +33,27 @@ docker build -t btc-matrix .
 docker run --rm -p 3000:3000 -v "$(pwd)/data:/app/data" btc-matrix
 ```
 
+### Container CI and releases
+
+The GitHub Actions container workflow builds each pull request when opened,
+updated, or reopened. PR builds do not log in to Docker Hub or push images.
+
+To enable publishing, add a repository Actions secret named `DOCKERHUB_TOKEN`
+containing a Docker Hub access token for `agaddy` with write access to
+`agaddy/bitcoin_price_tracker`.
+
+Push a stable release tag in the existing `vMAJOR.MINOR.PATCH` format:
+
+```bash
+git tag v2.3.1
+git push origin v2.3.1
+```
+
+This builds and pushes `agaddy/bitcoin_price_tracker:2.3.1` and
+`agaddy/bitcoin_price_tracker:latest`. Each published release updates `latest`,
+including releases from older branches. Branch pushes and prerelease tags do
+not publish images. The workflow must be present in the tagged commit.
+
 ## Config
 
 - Default DB: `data/bitcoin_prices.db`
