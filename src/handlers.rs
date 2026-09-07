@@ -43,7 +43,7 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
     let active_viewers = active_viewer_count(&state).await;
     let mut refresh_succeeded = false;
     let mut refresh_skipped_reason = None;
-    let mut refresh_error = None;
+    let mut refresh_errors = Vec::new();
 
     if active_viewers == 0 {
         refresh_skipped_reason = Some(
@@ -66,14 +66,23 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                     let generation = state.full_refresh_generation.load(Ordering::SeqCst);
                     match coordinator.begin(state.clock.now_monotonic(), generation) {
                         Ok(plan) => {
-                            let result = refresh_snapshot(&state, snapshot, &plan).await;
+                            let outcome = refresh_snapshot(&state, snapshot, &plan).await;
                             coordinator.complete(&plan);
-                            match result {
-                                Ok(()) => refresh_succeeded = true,
+                            for error in &outcome.failures {
+                                warn!(error = ?error, "provider refresh failed");
+                            }
+                            match outcome.stored {
+                                Ok(stored) => refresh_succeeded = stored,
                                 Err(error) => {
                                     warn!(error = ?error, "price refresh failed");
-                                    refresh_error = Some(error.to_string());
+                                    refresh_errors.push(error.to_string());
                                 }
+                            }
+                            // A saved snapshot already contains these warnings. Failed or
+                            // skipped writes report them on this response without rewriting data.
+                            if !refresh_succeeded {
+                                refresh_errors
+                                    .extend(outcome.failures.iter().map(ToString::to_string));
                             }
                         }
                         Err(reason) => refresh_skipped_reason = Some(reason.to_string()),
@@ -82,8 +91,8 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
             }
             Err(error) => {
                 warn!(error = %error, "failed to inspect SQLite before refresh");
-                refresh_error =
-                    Some("Failed to inspect stored price data before refresh".to_string());
+                refresh_errors
+                    .push("Failed to inspect stored price data before refresh".to_string());
             }
         }
     } else {
@@ -102,12 +111,12 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                 .unwrap_or(true);
             let mut warnings = snapshot.warnings.clone();
 
-            if let Some(error) = refresh_error {
-                warnings.insert(
-                    0,
-                    format!("Refresh failed; serving latest SQLite snapshot: {error}"),
-                );
-            }
+            warnings.splice(
+                0..0,
+                refresh_errors.into_iter().map(|error| {
+                    format!("Refresh failed; serving latest SQLite snapshot: {error}")
+                }),
+            );
 
             (
                 StatusCode::OK,
@@ -129,9 +138,7 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
         }
         Ok(None) => {
             let mut warnings = vec!["No stored BTC price snapshot is available yet.".to_string()];
-            if let Some(error) = refresh_error {
-                warnings.push(error);
-            }
+            warnings.extend(refresh_errors);
 
             (
                 StatusCode::SERVICE_UNAVAILABLE,

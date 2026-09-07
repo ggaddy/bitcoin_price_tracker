@@ -13,7 +13,10 @@ Rust BTC/USD tracker with a terminal-style UI.
 - Serves stored prices while another request refreshes; concurrent cold-start requests receive 503 until a snapshot is available
 - Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
 - Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
-- Requires finite, positive prices; serves the previous snapshot when a refresh fails and stored data is available
+- Requires finite, positive prices; merges successful provider results with retained quotes when other providers fail
+- Leaves the stored snapshot unchanged if every provider fails or the database write fails
+
+The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. If nothing can be saved, errors appear in that request's response and the previous snapshot remains intact. Snapshot timestamps and aggregates still describe the merged snapshot; per-source freshness and persistent health tracking are planned in P3 of [AUDIT.md](AUDIT.md).
 
 ## Local
 

@@ -1,7 +1,7 @@
 use reqwest::{Client, Response, header::RETRY_AFTER};
 use serde_json::Value;
 use std::collections::HashMap;
-use tokio::try_join;
+use tokio::join;
 
 use crate::{
     config::UpstreamEndpoints,
@@ -156,37 +156,54 @@ async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, Pr
     parse_price(provider, "bid", bid)
 }
 
+pub(crate) struct RefreshOutcome {
+    // Keep every typed provider error even when persistence also fails.
+    pub(crate) failures: Vec<ProviderError>,
+    // Ok(false) means no provider supplied a quote, so no write was attempted.
+    pub(crate) stored: Result<bool, RefreshError>,
+}
+
 pub(crate) async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
     plan: &RefreshPlan,
-) -> Result<(), RefreshError> {
-    let refreshed = fetch_selected_sources(&state.client, &state.endpoints, &plan.sources).await?;
-    let (sources, refreshed_source) = if plan.full_refresh {
-        (refreshed, Some("all".to_string()))
-    } else {
-        (
-            merge_snapshot_sources(
-                latest_snapshot.as_ref(),
-                refreshed.into_iter().next().unwrap(),
-            ),
-            Some(plan.sources[0].name().to_string()),
-        )
-    };
-    let (average_price, spread) = summarize_prices(&sources);
+) -> RefreshOutcome {
+    let results = fetch_selected_sources(&state.client, &state.endpoints, &plan.sources).await;
+    let mut refreshed = Vec::new();
+    let mut failures = Vec::new();
+    for result in results {
+        match result {
+            Ok(price) => refreshed.push(price),
+            Err(error) => failures.push(error),
+        }
+    }
+    if refreshed.is_empty() {
+        return RefreshOutcome {
+            failures,
+            stored: Ok(false),
+        };
+    }
 
+    let refreshed_source = match refreshed.as_slice() {
+        [price] => price.source.clone(),
+        prices if prices.len() == UpstreamSource::ALL.len() => "all".to_string(),
+        _ => "partial".to_string(),
+    };
+    let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed);
+    let (average_price, spread) = summarize_prices(&sources);
     let snapshot = SnapshotRecord {
         fetched_at_unix: state.clock.now_unix(),
         sources,
         average_price,
         spread,
-        warnings: Vec::new(),
-        refreshed_source,
+        warnings: failures.iter().map(ToString::to_string).collect(),
+        refreshed_source: Some(refreshed_source),
     };
-
-    store_snapshot(state.db_path.clone(), snapshot)
+    let stored = store_snapshot(state.db_path.clone(), snapshot)
         .await
-        .map_err(RefreshError::Storage)
+        .map(|()| true)
+        .map_err(RefreshError);
+    RefreshOutcome { failures, stored }
 }
 
 async fn fetch_round_robin_source(
@@ -206,31 +223,29 @@ async fn fetch_selected_sources(
     client: &Client,
     endpoints: &UpstreamEndpoints,
     sources: &[UpstreamSource],
-) -> Result<Vec<SourcePrice>, ProviderError> {
+) -> Vec<Result<SourcePrice, ProviderError>> {
     let fetch = |source| async move {
         if sources.contains(&source) {
-            fetch_round_robin_source(client, endpoints, source)
-                .await
-                .map(Some)
+            Some(fetch_round_robin_source(client, endpoints, source).await)
         } else {
-            Ok(None)
+            None
         }
     };
-    let (coingecko, coinbase, kraken, gemini) = try_join!(
+    let (coingecko, coinbase, kraken, gemini) = join!(
         fetch(UpstreamSource::CoinGecko),
         fetch(UpstreamSource::Coinbase),
         fetch(UpstreamSource::Kraken),
         fetch(UpstreamSource::Gemini)
-    )?;
-    Ok([coingecko, coinbase, kraken, gemini]
+    );
+    [coingecko, coinbase, kraken, gemini]
         .into_iter()
         .flatten()
-        .collect())
+        .collect()
 }
 
 fn merge_snapshot_sources(
     latest_snapshot: Option<&SnapshotRecord>,
-    refreshed_price: SourcePrice,
+    refreshed_prices: Vec<SourcePrice>,
 ) -> Vec<SourcePrice> {
     let mut source_prices = HashMap::new();
 
@@ -240,7 +255,9 @@ fn merge_snapshot_sources(
         }
     }
 
-    source_prices.insert(refreshed_price.source.clone(), refreshed_price.price_usd);
+    for refreshed_price in refreshed_prices {
+        source_prices.insert(refreshed_price.source, refreshed_price.price_usd);
+    }
     ordered_sources(source_prices)
 }
 

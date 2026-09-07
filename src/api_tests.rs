@@ -8,8 +8,253 @@ use crate::{
     presence::active_viewer_count,
     pricing::UpstreamSource,
     storage::load_latest_snapshot,
-    test_support::{TEST_NOW, TestApp},
+    test_support::{FixtureResponse, TEST_NOW, TestApp},
 };
+
+#[tokio::test]
+async fn partial_cold_start_keeps_the_only_successful_provider() {
+    let app = TestApp::new().await;
+    for source in [
+        UpstreamSource::CoinGecko,
+        UpstreamSource::Coinbase,
+        UpstreamSource::Kraken,
+    ] {
+        app.upstreams
+            .provider(source)
+            .set_response(FixtureResponse::json(json!({})));
+    }
+    let release = app
+        .upstreams
+        .provider(UpstreamSource::Gemini)
+        .hold_responses();
+    app.presence(true).await;
+    let response = app.price();
+    tokio::pin!(response);
+    tokio::select! {
+        _ = async {
+            for source in UpstreamSource::ALL {
+                app.upstreams.provider(source).wait_for_request().await;
+            }
+        } => {}
+        _ = &mut response => panic!("a failed provider cancelled the held successful provider"),
+    }
+    release.add_permits(1);
+    let (status, data) = response.await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["refresh_succeeded"], true);
+    assert_eq!(
+        data["sources"],
+        json!([{"source": "Gemini", "price_usd": 100_300.0}])
+    );
+    assert_eq!(data["average_price"], 100_300.0);
+    assert_eq!(data["spread"], 0.0);
+    let stored = load_latest_snapshot(app.state.db_path.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.refreshed_source.as_deref(), Some("Gemini"));
+    assert_eq!(data["warnings"].as_array().unwrap().len(), 3);
+    for source in ["CoinGecko", "Coinbase", "Kraken"] {
+        assert!(
+            data["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning.as_str().unwrap().contains(source))
+        );
+    }
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+    let (_, cached) = app.price().await;
+    assert_eq!(cached["warnings"], data["warnings"]);
+    assert_eq!(cached["sources"], data["sources"]);
+    assert_eq!(cached["refresh_succeeded"], false);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn total_provider_failure_preserves_the_database_and_reports_every_error() {
+    for seeded in [false, true] {
+        let app = TestApp::new().await;
+        app.presence(true).await;
+        if seeded {
+            // Include a warning in the stored snapshot so preservation covers metadata too.
+            app.upstreams
+                .provider(UpstreamSource::CoinGecko)
+                .set_response(FixtureResponse::json(json!({})));
+            assert_eq!(app.price().await.0, StatusCode::OK);
+            app.presence(false).await;
+            app.clock.advance(Duration::from_secs(10));
+            app.presence(true).await;
+        }
+        for source in UpstreamSource::ALL {
+            app.upstreams
+                .provider(source)
+                .set_response(FixtureResponse::json(json!({})));
+        }
+        let before = std::fs::read(&app.state.db_path).unwrap();
+        let (status, data) = app.price().await;
+        assert_eq!(
+            status,
+            if seeded {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        );
+        assert_eq!(data["refresh_succeeded"], false);
+        assert_eq!(std::fs::read(&app.state.db_path).unwrap(), before);
+        for source in UpstreamSource::ALL {
+            assert!(
+                data["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|warning| warning.as_str().unwrap().contains(source.name()))
+            );
+        }
+        assert_eq!(
+            app.upstreams.request_counts(),
+            [if seeded { 2 } else { 1 }; 4]
+        );
+        let counts = app.upstreams.request_counts();
+        assert_eq!(app.price().await.1["refresh_succeeded"], false);
+        assert_eq!(app.upstreams.request_counts(), counts);
+    }
+}
+
+#[tokio::test]
+async fn partial_refresh_write_failure_preserves_quotes_and_both_error_types() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    let (_, original) = app.price().await;
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_snapshot BEFORE INSERT ON price_snapshots
+        BEGIN SELECT RAISE(ABORT, 'private error at /private/fixture.db'); END;",
+    )
+    .unwrap();
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({})));
+    app.upstreams
+        .provider(UpstreamSource::Coinbase)
+        .set_response(FixtureResponse::json(json!({"data": {"amount": "120000"}})));
+    app.presence(false).await;
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(true).await;
+    let before = std::fs::read(&app.state.db_path).unwrap();
+    let (status, data) = app.price().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["refresh_succeeded"], false);
+    assert_eq!(data["sources"], original["sources"]);
+    assert_eq!(data["fetched_at_unix"], TEST_NOW);
+    assert_eq!(std::fs::read(&app.state.db_path).unwrap(), before);
+    assert_eq!(data["warnings"].as_array().unwrap().len(), 2);
+    assert!(
+        data["warnings"]
+            .to_string()
+            .contains("CoinGecko response invalid")
+    );
+    assert!(
+        data["warnings"]
+            .to_string()
+            .contains("Failed to store refreshed price data")
+    );
+    assert!(!data.to_string().contains("private error"));
+    assert!(!data.to_string().contains("/private/fixture.db"));
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+    let (_, cached) = app.price().await;
+    assert!(
+        cached["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("last attempt")
+    );
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+
+    conn.execute_batch("DROP TRIGGER reject_snapshot;").unwrap();
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": 120000}})));
+    app.clock.advance(Duration::from_secs(10));
+    let (_, recovered) = app.price().await;
+    assert_eq!(recovered["refresh_succeeded"], true);
+    assert_eq!(recovered["sources"][0]["price_usd"], 120_000.0);
+    assert_eq!(recovered["sources"][1]["price_usd"], 100_100.0);
+    assert_eq!(app.upstreams.request_counts(), [3, 2, 2, 2]);
+}
+
+#[tokio::test]
+async fn full_refresh_timeout_keeps_three_successful_quotes() {
+    let app = TestApp::new().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    app.presence(true).await;
+    // Exercise the real five-second deadline: the other local responses complete
+    // while this provider remains held, without advancing their timers prematurely.
+    let (status, data) = app.price().await;
+    release.add_permits(1);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["refresh_succeeded"], true);
+    assert_eq!(
+        data["sources"],
+        json!([
+            {"source": "Coinbase", "price_usd": 100_100.0},
+            {"source": "Kraken", "price_usd": 100_200.0},
+            {"source": "Gemini", "price_usd": 100_300.0},
+        ])
+    );
+    assert_eq!(data["average_price"], 100_200.0);
+    assert_eq!(data["warnings"], json!(["CoinGecko request timed out"]));
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn partial_full_refresh_merges_successes_with_retained_quotes() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(FixtureResponse::json(
+            json!({"bitcoin": {"usd": 110_000.0}}),
+        ));
+    app.upstreams
+        .provider(UpstreamSource::Kraken)
+        .set_response(FixtureResponse::json(
+            json!({"result": {"XXBTZUSD": {"c": ["110200"]}}}),
+        ));
+    for source in [UpstreamSource::Coinbase, UpstreamSource::Gemini] {
+        app.upstreams
+            .provider(source)
+            .set_response(FixtureResponse::json(json!({})));
+    }
+    app.presence(false).await;
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(true).await;
+    let (status, data) = app.price().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["refresh_succeeded"], true);
+    assert_eq!(
+        data["sources"],
+        json!([
+            {"source": "CoinGecko", "price_usd": 110_000.0},
+            {"source": "Coinbase", "price_usd": 100_100.0},
+            {"source": "Kraken", "price_usd": 110_200.0},
+            {"source": "Gemini", "price_usd": 100_300.0},
+        ])
+    );
+    assert_eq!(data["average_price"], 105_150.0);
+    assert_eq!(data["spread"], 10_100.0);
+    let stored = load_latest_snapshot(app.state.db_path.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.refreshed_source.as_deref(), Some("partial"));
+    assert_eq!(data["fetched_at_unix"], TEST_NOW + 10);
+    assert_eq!(data["warnings"].as_array().unwrap().len(), 2);
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+}
 
 #[tokio::test]
 async fn cached_callers_finish_while_one_refresh_is_stalled() {

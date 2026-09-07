@@ -146,44 +146,23 @@ impl Error for ProviderError {
     }
 }
 
-pub(crate) enum RefreshError {
-    Provider(ProviderError),
-    Storage(String),
-}
+// Provider errors are collected in RefreshOutcome; this error represents a failed write.
+// Debug retains storage details for logs, while Display stays safe for clients.
+pub(crate) struct RefreshError(pub(crate) String);
 
-// Explicitly retain storage details for diagnostic logs, while Display stays safe for clients.
 impl fmt::Debug for RefreshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Provider(error) => f.debug_tuple("Provider").field(error).finish(),
-            Self::Storage(details) => f.debug_tuple("Storage").field(details).finish(),
-        }
-    }
-}
-
-impl From<ProviderError> for RefreshError {
-    fn from(error: ProviderError) -> Self {
-        Self::Provider(error)
+        f.debug_tuple("RefreshError").field(&self.0).finish()
     }
 }
 
 impl fmt::Display for RefreshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Provider(error) => error.fmt(f),
-            Self::Storage(_) => write!(f, "Failed to store refreshed price data"),
-        }
+        write!(f, "Failed to store refreshed price data")
     }
 }
 
-impl Error for RefreshError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Provider(error) => Some(error),
-            Self::Storage(_) => None,
-        }
-    }
-}
+impl Error for RefreshError {}
 
 #[cfg(test)]
 mod tests {
@@ -226,7 +205,7 @@ mod tests {
 
     #[test]
     fn storage_details_are_diagnostic_only() {
-        let error = RefreshError::Storage("database failed at /private/fixture.db".to_string());
+        let error = RefreshError("database failed at /private/fixture.db".to_string());
         assert!(!error.to_string().contains("/private/fixture.db"));
         assert!(format!("{error:?}").contains("/private/fixture.db"));
     }
