@@ -12,6 +12,114 @@ use crate::{
 };
 
 #[tokio::test]
+async fn all_rate_limited_providers_wait_without_consuming_pending_activation() {
+    use axum::http::{HeaderValue, header::RETRY_AFTER};
+    use std::time::UNIX_EPOCH;
+
+    // Exercise header parsing through the actual HTTP adapters and coordinator.
+    for hint in [
+        "60".to_string(),
+        httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs((TEST_NOW + 60) as u64)),
+    ] {
+        let app = TestApp::new().await;
+        for source in UpstreamSource::ALL {
+            let mut response = FixtureResponse::json(json!({}));
+            response.status = StatusCode::TOO_MANY_REQUESTS;
+            response
+                .headers
+                .insert(RETRY_AFTER, HeaderValue::from_str(&hint).unwrap());
+            app.upstreams.provider(source).set_response(response);
+        }
+        app.presence(true).await;
+        assert_eq!(app.price().await.0, StatusCode::SERVICE_UNAVAILABLE);
+        app.presence(false).await;
+        app.presence(true).await;
+        for seconds in [10, 10, 10, 10, 10, 9] {
+            app.clock.advance(Duration::from_secs(seconds));
+            app.presence(true).await;
+            for _ in 0..3 {
+                let (_, cached) = app.price().await;
+                assert!(
+                    cached["refresh_skipped_reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("all providers")
+                );
+            }
+            assert_eq!(app.upstreams.request_counts(), [1; 4]);
+        }
+        app.clock.advance(Duration::from_secs(1));
+        app.upstreams
+            .provider(UpstreamSource::CoinGecko)
+            .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": 123000}})));
+        let (status, recovered) = app.price().await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(recovered["average_price"], 123000.0);
+        // A pending activation still attempts every eligible provider at exactly 60s.
+        assert_eq!(app.upstreams.request_counts(), [2; 4]);
+        app.upstreams
+            .provider(UpstreamSource::CoinGecko)
+            .set_response(FixtureResponse::json(json!({})));
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(true).await;
+        assert_eq!(app.price().await.1["refresh_succeeded"], false);
+        assert_eq!(app.upstreams.request_counts(), [3, 2, 2, 2]);
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(false).await;
+        app.presence(true).await;
+        app.price().await;
+        // Recovery reset CoinGecko's backoff: its next failure waits 10s, not 20s.
+        assert_eq!(
+            app.upstreams
+                .provider(UpstreamSource::CoinGecko)
+                .request_count(),
+            4
+        );
+    }
+}
+
+#[tokio::test]
+async fn rate_limited_provider_does_not_block_healthy_rotation_or_lose_retry_on_write_failure() {
+    use axum::http::{HeaderValue, header::RETRY_AFTER};
+
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.price().await;
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_snapshot BEFORE INSERT ON price_snapshots
+        BEGIN SELECT RAISE(ABORT, 'test write failure'); END;",
+    )
+    .unwrap();
+    let mut response = FixtureResponse::json(json!({}));
+    response.status = StatusCode::TOO_MANY_REQUESTS;
+    response
+        .headers
+        .insert(RETRY_AFTER, HeaderValue::from_static("120"));
+    app.upstreams
+        .provider(UpstreamSource::CoinGecko)
+        .set_response(response);
+    app.clock.advance(Duration::from_secs(10));
+    app.presence(false).await;
+    app.presence(true).await;
+    let (_, failed_write) = app.price().await;
+    assert_eq!(failed_write["refresh_succeeded"], false);
+    assert!(
+        failed_write["warnings"]
+            .to_string()
+            .contains("Failed to store")
+    );
+    assert_eq!(app.upstreams.request_counts(), [2; 4]);
+    conn.execute_batch("DROP TRIGGER reject_snapshot;").unwrap();
+    for _ in 0..4 {
+        app.clock.advance(Duration::from_secs(10));
+        app.presence(true).await;
+        assert_eq!(app.price().await.1["refresh_succeeded"], true);
+    }
+    assert_eq!(app.upstreams.request_counts(), [2, 4, 3, 3]);
+}
+
+#[tokio::test]
 async fn partial_cold_start_keeps_the_only_successful_provider() {
     let app = TestApp::new().await;
     for source in [

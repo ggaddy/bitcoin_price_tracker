@@ -1,12 +1,17 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::{config::REFRESH_INTERVAL_SECONDS, pricing::UpstreamSource};
+use crate::{
+    config::REFRESH_INTERVAL_SECONDS,
+    errors::{ProviderError, ProviderErrorKind, RetryAfter},
+    pricing::UpstreamSource,
+};
 
 #[derive(Default)]
 pub(crate) struct RefreshCoordinator {
     next_source: usize,
     last_attempt: Option<Instant>,
     next_eligible: [Option<Instant>; 4],
+    consecutive_failures: [u32; 4],
     completed_generation: u64,
 }
 
@@ -69,7 +74,49 @@ impl RefreshCoordinator {
         })
     }
 
-    pub(crate) fn complete(&mut self, plan: &RefreshPlan) {
+    pub(crate) fn complete(
+        &mut self,
+        plan: &RefreshPlan,
+        failures: &[ProviderError],
+        now: Instant,
+        now_unix: i64,
+    ) {
+        for source in &plan.sources {
+            let index = UpstreamSource::ALL
+                .iter()
+                .position(|candidate| candidate == source)
+                .unwrap();
+            if let Some(error) = failures.iter().find(|error| error.provider == *source) {
+                let count = self.consecutive_failures[index].saturating_add(1).min(6);
+                self.consecutive_failures[index] = count;
+                let backoff = Duration::from_secs((10_u64 << (count - 1)).min(300));
+                let retry_delay = match &error.kind {
+                    ProviderErrorKind::Http {
+                        retry_after: Some(RetryAfter::Delay(delay)),
+                        ..
+                    } => Some(*delay),
+                    ProviderErrorKind::Http {
+                        retry_after: Some(RetryAfter::At(time)),
+                        ..
+                    } => time.duration_since(UNIX_EPOCH).ok().and_then(|time| {
+                        let seconds = (i128::from(time.as_secs()) - i128::from(now_unix)).max(0);
+                        u64::try_from(seconds).ok().map(Duration::from_secs)
+                    }),
+                    _ => None,
+                };
+                // Convert a wall-clock hint once; subsequent eligibility is monotonic.
+                // Ignore hints too large for Instant instead of panicking or retrying now.
+                self.next_eligible[index] = Some(
+                    retry_delay
+                        .and_then(|delay| now.checked_add(delay.max(backoff)))
+                        .unwrap_or(now + backoff),
+                );
+            } else {
+                // Provider recovery is independent of whether SQLite saved its quote.
+                // Keep the minimum deadline installed before dispatch even on write failure.
+                self.consecutive_failures[index] = 0;
+            }
+        }
         if plan.full_refresh {
             // A newer activation lives in a separate atomic and is never cleared.
             self.completed_generation = plan.generation;
@@ -80,6 +127,104 @@ impl RefreshCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn http_failure(retry_after: Option<RetryAfter>) -> ProviderError {
+        ProviderError {
+            provider: UpstreamSource::CoinGecko,
+            kind: ProviderErrorKind::Http {
+                status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                retry_after,
+            },
+        }
+    }
+
+    #[test]
+    fn repeated_failures_back_off_to_cap_and_recovery_resets_delay() {
+        let mut coordinator = RefreshCoordinator::default();
+        let mut now = Instant::now();
+        for (attempt, seconds) in [10, 20, 40, 80, 160, 300, 300].into_iter().enumerate() {
+            // New activations cannot bypass an individual provider's cooldown.
+            let generation = attempt as u64 + 1;
+            let plan = coordinator.begin(now, generation).unwrap();
+            assert!(plan.sources.contains(&UpstreamSource::CoinGecko));
+            coordinator.complete(&plan, &[http_failure(None)], now, 0);
+            assert_eq!(
+                coordinator.next_eligible[0],
+                Some(now + Duration::from_secs(seconds))
+            );
+            now += Duration::from_secs(seconds);
+        }
+        let plan = coordinator.begin(now, 8).unwrap();
+        coordinator.complete(&plan, &[], now, 0);
+        now += Duration::from_secs(10);
+        let plan = coordinator.begin(now, 9).unwrap();
+        coordinator.complete(&plan, &[http_failure(None)], now, 0);
+        assert_eq!(
+            coordinator.next_eligible[0],
+            Some(now + Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn retry_hints_extend_backoff_and_ignore_unrepresentable_deadlines() {
+        for (hint, seconds) in [
+            (None, 10),
+            (Some(RetryAfter::Delay(Duration::ZERO)), 10),
+            (Some(RetryAfter::Delay(Duration::from_secs(600))), 600),
+            (
+                Some(RetryAfter::At(UNIX_EPOCH + Duration::from_secs(1600))),
+                600,
+            ),
+            (
+                Some(RetryAfter::At(UNIX_EPOCH + Duration::from_secs(900))),
+                10,
+            ),
+            (Some(RetryAfter::Delay(Duration::from_secs(u64::MAX))), 10),
+        ] {
+            let mut coordinator = RefreshCoordinator::default();
+            let now = Instant::now();
+            let plan = coordinator.begin(now, 1).unwrap();
+            coordinator.complete(&plan, &[http_failure(hint)], now, 1000);
+            assert_eq!(
+                coordinator.next_eligible[0],
+                Some(now + Duration::from_secs(seconds))
+            );
+        }
+    }
+
+    #[test]
+    fn cooling_provider_is_skipped_until_exact_deadline() {
+        let mut coordinator = RefreshCoordinator::default();
+        let now = Instant::now();
+        let plan = coordinator.begin(now, 1).unwrap();
+        coordinator.complete(
+            &plan,
+            &[http_failure(Some(RetryAfter::Delay(Duration::from_secs(
+                60,
+            ))))],
+            now,
+            0,
+        );
+        assert_eq!(
+            coordinator
+                .begin(now + Duration::from_secs(10), 1)
+                .unwrap()
+                .sources,
+            [UpstreamSource::Coinbase]
+        );
+        let plan = coordinator.begin(now + Duration::from_secs(59), 2).unwrap();
+        assert!(!plan.sources.contains(&UpstreamSource::CoinGecko));
+        coordinator.complete(&plan, &[], now + Duration::from_secs(59), 59);
+        // Even a provider whose retry expires must respect the global attempt gate.
+        assert!(coordinator.begin(now + Duration::from_secs(60), 2).is_err());
+        assert_eq!(
+            coordinator
+                .begin(now + Duration::from_secs(69), 2)
+                .unwrap()
+                .sources,
+            [UpstreamSource::CoinGecko]
+        );
+    }
 
     #[test]
     fn attempts_rotate_without_requiring_a_successful_snapshot() {

@@ -67,7 +67,12 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                     match coordinator.begin(state.clock.now_monotonic(), generation) {
                         Ok(plan) => {
                             let outcome = refresh_snapshot(&state, snapshot, &plan).await;
-                            coordinator.complete(&plan);
+                            coordinator.complete(
+                                &plan,
+                                &outcome.failures,
+                                state.clock.now_monotonic(),
+                                state.clock.now_unix(),
+                            );
                             for error in &outcome.failures {
                                 warn!(error = ?error, "provider refresh failed");
                             }

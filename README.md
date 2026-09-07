@@ -14,6 +14,8 @@ binary, so styling works without a CDN or a frontend build step.
 - Refreshes only while a visible tab is active
 - Rotates upstream checks one source at a time, advancing after failed attempts too
 - Skips refreshes when the latest snapshot is under 10 seconds old or the previous attempt started less than 10 seconds ago
+- Backs off failed providers for 10, 20, 40, 80, 160, then 300 seconds; successful provider recovery resets the delay
+- Honors longer valid `Retry-After` delays or HTTP dates, skipping cooling-down providers while others continue
 - Serves stored prices while another request refreshes; concurrent cold-start requests receive 503 until a snapshot is available
 - Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
 - Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
@@ -21,6 +23,12 @@ binary, so styling works without a CDN or a frontend build step.
 - Leaves the stored snapshot unchanged if every provider fails or the database write fails
 
 The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. If nothing can be saved, errors appear in that request's response and the previous snapshot remains intact. Snapshot timestamps and aggregates still describe the merged snapshot; per-source freshness and persistent health tracking are planned in P3 of [AUDIT.md](AUDIT.md).
+
+Retry delays start when the batch completes and use monotonic deadlines. Invalid or
+unrepresentably large retry hints fall back to exponential backoff. When every
+provider is cooling down, requests serve stored data without consuming another
+attempt. Retry state is process-local and resets on restart; the persisted
+snapshot still supplies the ten-second success-age gate.
 
 ## Local
 
