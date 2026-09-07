@@ -25,6 +25,18 @@ binary, so styling works without a CDN or a frontend build step.
 
 The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. If nothing can be saved, errors appear in that request's response and the previous snapshot remains intact. Snapshot timestamps and aggregates still describe the merged snapshot; per-source freshness and persistent health tracking are planned in P3 of [AUDIT.md](AUDIT.md).
 
+The upcoming observation, provider health, freshness, and coverage fields are
+defined in [the P3 source contract](docs/source-contract.md). These fields are not
+yet served by the live API; observation persistence and response integration
+follow in P3.3–P3.5.
+
+Startup now migrates unversioned SQLite databases to schema version 1 atomically.
+It preserves the latest quotes, adds nullable observation times and quote kinds,
+and initializes independent provider health as unknown. Legacy observation times
+are never inferred from snapshot time. Repeated startup preserves the metadata;
+migration failure rolls back all schema/data changes, and unsupported schema
+versions stop startup. Normal refreshes will populate the new metadata in P3.3.
+
 Retry delays start when the batch completes and use monotonic deadlines. Invalid or
 unrepresentably large retry hints fall back to exponential backoff. When every
 provider is cooling down, requests serve stored data without consuming another

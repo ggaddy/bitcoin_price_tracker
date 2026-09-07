@@ -6,7 +6,12 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task;
 
-use crate::models::{SnapshotRecord, SourcePrice};
+use crate::{
+    models::{SnapshotRecord, SourcePrice},
+    pricing::UpstreamSource,
+};
+
+const SCHEMA_VERSION: i64 = 1;
 
 pub(crate) async fn init_db(db_path: PathBuf) -> Result<(), String> {
     run_blocking(move || init_db_sync(&db_path)).await
@@ -18,10 +23,35 @@ fn init_db_sync(db_path: &Path) -> Result<(), String> {
             .map_err(|error| format!("failed to create database directory {parent:?}: {error}"))?;
     }
 
-    let conn = open_connection(db_path)?;
+    let mut conn = open_connection(db_path)?;
+    // Serialize startup migrations and include schema, retention, health seeding,
+    // and version publication in the same rollback boundary.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("failed to start schema migration: {error}"))?;
+    let version: i64 = tx
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| format!("failed to read SQLite schema version: {error}"))?;
+    match version {
+        0 => migrate_unversioned_schema(&tx)?,
+        SCHEMA_VERSION => {}
+        _ => {
+            return Err(format!(
+                "unsupported SQLite schema version {version}; supported version is {SCHEMA_VERSION}"
+            ));
+        }
+    }
+    prune_snapshots_to_latest(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(|error| format!("failed to record SQLite schema version: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit schema migration: {error}"))?;
+    Ok(())
+}
+
+fn migrate_unversioned_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
-        PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS price_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fetched_at_unix INTEGER NOT NULL,
@@ -43,8 +73,49 @@ fn init_db_sync(db_path: &Path) -> Result<(), String> {
     )
     .map_err(|error| format!("failed to initialize schema: {error}"))?;
 
-    ensure_snapshot_column(&conn, "refreshed_source", "TEXT")?;
-    prune_snapshots_to_latest(&conn)?;
+    ensure_snapshot_column(conn, "refreshed_source", "TEXT")?;
+    conn.execute_batch(
+        "ALTER TABLE source_prices ADD COLUMN last_success_at_unix INTEGER;
+         ALTER TABLE source_prices ADD COLUMN quote_kind TEXT NOT NULL DEFAULT 'unknown'
+             CHECK (quote_kind IN ('aggregate', 'spot', 'last_trade', 'bid', 'unknown'));
+         UPDATE source_prices SET quote_kind = CASE source
+             WHEN 'CoinGecko' THEN 'aggregate'
+             WHEN 'Coinbase' THEN 'spot'
+             WHEN 'Kraken' THEN 'last_trade'
+             WHEN 'Gemini' THEN 'bid'
+             ELSE 'unknown' END;
+         CREATE TABLE provider_health (
+             source TEXT PRIMARY KEY NOT NULL,
+             attempt_outcome TEXT NOT NULL DEFAULT 'unknown'
+                 CHECK (attempt_outcome IN ('unknown', 'success', 'failure')),
+             attempted_at_unix INTEGER,
+             error_category TEXT CHECK (error_category IN
+                 ('timeout', 'transport', 'http', 'invalid_payload', 'invalid_price')),
+             error_message TEXT,
+             http_status INTEGER CHECK (http_status BETWEEN 100 AND 599),
+             CHECK (
+                 (attempt_outcome = 'unknown' AND attempted_at_unix IS NULL
+                     AND error_category IS NULL AND error_message IS NULL AND http_status IS NULL)
+                 OR (attempt_outcome = 'success' AND attempted_at_unix IS NOT NULL
+                     AND error_category IS NULL AND error_message IS NULL AND http_status IS NULL)
+                 OR (attempt_outcome = 'failure' AND attempted_at_unix IS NOT NULL
+                     AND error_category IS NOT NULL AND error_message IS NOT NULL
+                     AND ((error_category = 'http' AND http_status IS NOT NULL)
+                         OR (error_category != 'http' AND http_status IS NULL)))
+             )
+         );",
+    )
+    .map_err(|error| {
+        format!("failed to migrate source observations and provider health: {error}")
+    })?;
+    // Do not infer successful attempts or observation times from legacy snapshots.
+    for source in UpstreamSource::ALL {
+        conn.execute(
+            "INSERT INTO provider_health (source) VALUES (?1)",
+            [source.name()],
+        )
+        .map_err(|error| format!("failed to initialize provider health: {error}"))?;
+    }
 
     Ok(())
 }
@@ -319,6 +390,281 @@ mod tests {
             warnings: Vec::new(),
             refreshed_source: Some("CoinGecko".to_string()),
         }
+    }
+
+    fn create_legacy_database(db_path: &std::path::Path, with_refreshed_source: bool) {
+        let conn = open_connection(db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE price_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fetched_at_unix INTEGER NOT NULL,
+                average_price REAL, spread REAL, warnings_json TEXT NOT NULL
+             );
+             CREATE TABLE source_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                source TEXT NOT NULL, price_usd REAL NOT NULL,
+                FOREIGN KEY(snapshot_id) REFERENCES price_snapshots(id) ON DELETE CASCADE
+             );
+             INSERT INTO price_snapshots VALUES (1, 10, 90000, 0, '[]');
+             INSERT INTO price_snapshots VALUES (2, 20, 100002, 4, '[\"legacy warning\"]');
+             INSERT INTO source_prices (snapshot_id, source, price_usd) VALUES (1, 'CoinGecko', 90000);"
+        ).unwrap();
+        if with_refreshed_source {
+            conn.execute_batch(
+                "ALTER TABLE price_snapshots ADD COLUMN refreshed_source TEXT;
+                 UPDATE price_snapshots SET refreshed_source = 'all' WHERE id = 2;",
+            )
+            .unwrap();
+        }
+        for (index, source) in ["CoinGecko", "Coinbase", "Kraken", "Gemini", "Legacy"]
+            .into_iter()
+            .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO source_prices (snapshot_id, source, price_usd) VALUES (2, ?1, ?2)",
+                params![source, 100000.0 + index as f64],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn fresh_database_has_versioned_observation_schema_and_unknown_provider_health() {
+        let db_path = temp_db_path("fresh-schema");
+        init_db_sync(&db_path).unwrap();
+        let conn = open_connection(&db_path).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM source_prices", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let health: Vec<(String, String, Option<i64>)> = conn.prepare(
+            "SELECT source, attempt_outcome, attempted_at_unix FROM provider_health ORDER BY source"
+        ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            health,
+            ["CoinGecko", "Coinbase", "Gemini", "Kraken"].map(|source| (
+                source.to_string(),
+                "unknown".to_string(),
+                None
+            ))
+        );
+        drop(conn);
+        fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn legacy_migration_preserves_latest_quotes_and_leaves_observation_times_unknown() {
+        for with_refreshed_source in [false, true] {
+            let db_path = temp_db_path("legacy-migration");
+            create_legacy_database(&db_path, with_refreshed_source);
+            init_db_sync(&db_path).unwrap();
+            let snapshot = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+            assert_eq!(snapshot.fetched_at_unix, 20);
+            assert_eq!(snapshot.average_price, Some(100002.0));
+            assert_eq!(snapshot.spread, Some(4.0));
+            assert_eq!(snapshot.warnings, ["legacy warning"]);
+            assert_eq!(
+                snapshot.refreshed_source.as_deref(),
+                with_refreshed_source.then_some("all")
+            );
+            assert_eq!(snapshot.sources.len(), 5);
+            let conn = open_connection(&db_path).unwrap();
+            let rows: Vec<(String, f64, Option<i64>, String)> = conn.prepare(
+                "SELECT source, price_usd, last_success_at_unix, quote_kind FROM source_prices ORDER BY id"
+            ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap()
+                .collect::<Result<_, _>>().unwrap();
+            assert_eq!(
+                rows,
+                [
+                    ("CoinGecko", "aggregate"),
+                    ("Coinbase", "spot"),
+                    ("Kraken", "last_trade"),
+                    ("Gemini", "bid"),
+                    ("Legacy", "unknown")
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (source, kind))| (
+                    source.to_string(),
+                    100000.0 + index as f64,
+                    None,
+                    kind.to_string()
+                ))
+                .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM price_snapshots", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM provider_health WHERE attempt_outcome = 'unknown'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                4
+            );
+            assert!(
+                conn.prepare("PRAGMA foreign_key_check")
+                    .unwrap()
+                    .query([])
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_none()
+            );
+            drop(conn);
+            fs::remove_file(db_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn repeated_startup_preserves_recorded_observations_and_health() {
+        let db_path = temp_db_path("repeat-migration");
+        create_legacy_database(&db_path, true);
+        init_db_sync(&db_path).unwrap();
+        let conn = open_connection(&db_path).unwrap();
+        conn.execute_batch(
+            "UPDATE source_prices SET last_success_at_unix = 18 WHERE source = 'CoinGecko';
+             UPDATE provider_health SET attempt_outcome = 'failure', attempted_at_unix = 21,
+                 error_category = 'http', error_message = 'rate limited', http_status = 429
+                 WHERE source = 'CoinGecko';",
+        )
+        .unwrap();
+        for _ in 0..2 {
+            init_db_sync(&db_path).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT last_success_at_unix FROM source_prices WHERE source = 'CoinGecko'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            18
+        );
+        let health: (String, i64, String, i64) = conn.query_row(
+            "SELECT attempt_outcome, attempted_at_unix, error_message, http_status FROM provider_health WHERE source = 'CoinGecko'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        ).unwrap();
+        assert_eq!(health, ("failure".into(), 21, "rate limited".into(), 429));
+        // Health is provider-owned, not deleted when a snapshot is replaced.
+        store_snapshot_sync(&db_path, snapshot_for_test(30)).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM provider_health", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        drop(conn);
+        fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_schema_health_version_and_retention() {
+        let db_path = temp_db_path("migration-rollback");
+        create_legacy_database(&db_path, false);
+        let conn = open_connection(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_pruning BEFORE DELETE ON price_snapshots
+             BEGIN SELECT RAISE(ABORT, 'forced migration failure'); END;",
+        )
+        .unwrap();
+        let before = fs::read(&db_path).unwrap();
+        let error = init_db_sync(&db_path).unwrap_err();
+        assert!(error.contains("forced migration failure"), "{error}");
+        assert_eq!(fs::read(&db_path).unwrap(), before);
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM price_snapshots", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM source_prices", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            6
+        );
+        assert!(
+            conn.prepare("SELECT last_success_at_unix FROM source_prices")
+                .is_err()
+        );
+        assert!(
+            conn.prepare("SELECT refreshed_source FROM price_snapshots")
+                .is_err()
+        );
+        assert!(conn.prepare("SELECT * FROM provider_health").is_err());
+        conn.execute_batch("DROP TRIGGER reject_pruning;").unwrap();
+        init_db_sync(&db_path).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+        drop(conn);
+        fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn unsupported_schema_is_rejected_without_modifying_the_database() {
+        for version in [-1, 2] {
+            let db_path = temp_db_path("unsupported-schema");
+            create_legacy_database(&db_path, true);
+            let conn = open_connection(&db_path).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+            let before = fs::read(&db_path).unwrap();
+            let error = init_db_sync(&db_path).unwrap_err();
+            assert!(
+                error.contains(&format!("unsupported SQLite schema version {version}")),
+                "{error}"
+            );
+            assert_eq!(fs::read(&db_path).unwrap(), before);
+            drop(conn);
+            fs::remove_file(db_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn provider_health_rejects_inconsistent_outcomes() {
+        let db_path = temp_db_path("health-constraints");
+        init_db_sync(&db_path).unwrap();
+        let conn = open_connection(&db_path).unwrap();
+        for update in [
+            "attempt_outcome = 'success'",
+            "attempt_outcome = 'failure', attempted_at_unix = 10",
+            "attempted_at_unix = 10",
+            "attempt_outcome = 'failure', attempted_at_unix = 10, error_category = 'http', error_message = 'failed'",
+            "attempt_outcome = 'failure', attempted_at_unix = 10, error_category = 'timeout', error_message = 'failed', http_status = 429",
+        ] {
+            assert!(
+                conn.execute(
+                    &format!("UPDATE provider_health SET {update} WHERE source = 'CoinGecko'"),
+                    []
+                )
+                .is_err(),
+                "accepted {update}"
+            );
+        }
+        drop(conn);
+        fs::remove_file(db_path).unwrap();
     }
 
     #[test]

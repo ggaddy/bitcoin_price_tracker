@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+// P3.1 defines the next storage/API contract before P3.2–P3.5 migrate and
+// populate it. Keep the existing live response until observation data is available.
+#[allow(dead_code)]
+pub(crate) mod source_contract;
+
 #[derive(Clone, Serialize)]
 pub(crate) struct SourcePrice {
     pub(crate) source: String,
