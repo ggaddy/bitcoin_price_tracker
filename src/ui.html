@@ -23,7 +23,7 @@
       .intro h2 { margin-top: 10px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.02em; }
       .intro h2 span { color: var(--color-text-secondary); font-weight: 400; }
       .dashboard { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 20px; }
-      .hero { padding: 30px; background: radial-gradient(ellipse at top right, #00f0ff0c, transparent 65%), var(--color-bg-secondary); }
+      .hero { height: 100%; padding: 30px; background: radial-gradient(ellipse at top right, #00f0ff0c, transparent 65%), var(--color-bg-secondary); }
       .label { color: var(--color-text-secondary); text-transform: uppercase; }
       .hero-price { margin: 24px 0 10px; font-family: var(--font-mono); font-size: clamp(32px, 5.8vw, 76px); font-weight: 700; letter-spacing: -.065em; line-height: 1.2; color: var(--cyber-cyan-500); overflow-wrap: anywhere; }
       .hero-caption { color: var(--color-text-secondary); font-size: 13px; }
@@ -41,12 +41,8 @@
       .section-number { margin-right: 10px; color: var(--cyber-cyan-500); }
       .section-heading p { font-size: 12px; color: var(--color-text-secondary); }
       .sources-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-      .source-card { --card-accent: var(--cyber-cyan-500); --glitch-offset: 2px; position: relative; min-width: 0; }
+      .source-card { --card-accent: var(--cyber-cyan-500); position: relative; min-width: 0; }
       .source-card__surface { --card-accent: inherit; height: 100%; padding: 22px; }
-      .source-card__glitch { position: absolute; inset: 0; pointer-events: none; user-select: none; }
-      .source-card__glitch--cyan { animation: cyber-glitch-1 3s infinite linear alternate-reverse; filter: drop-shadow(2px 0 var(--cyber-cyan-500)); }
-      .source-card__glitch--magenta { animation: cyber-glitch-2 3s infinite linear alternate-reverse; filter: drop-shadow(-2px 0 var(--cyber-magenta-500)); }
-      @media (prefers-reduced-motion: reduce) { .source-card__glitch { display: none; animation: none; } }
       .source-card:nth-child(2) { --card-accent: var(--cyber-magenta-500); }
       .source-card:nth-child(3) { --card-accent: var(--cyber-yellow-500); }
       .source-card:nth-child(4) { --card-accent: var(--cyber-green-500); }
@@ -96,15 +92,18 @@
       </div>
 
       <div class="dashboard">
-        <section class="cyber-card hero" aria-labelledby="average-heading">
-          <div class="hero-heading">
-            <h2 class="label" id="average-heading">Average BTC/USD</h2>
-            <span class="cyber-badge cyber-badge--outline" id="status" role="status">Connecting</span>
-          </div>
-          <p class="hero-price" id="avg">Loading...</p>
-          <p class="hero-caption">USD per bitcoin · Average of stored provider quotes</p>
-          <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
-        </section>
+        <div class="cyber-neon-border">
+          <section class="cyber-card hero" aria-labelledby="average-heading">
+            <div class="hero-heading">
+              <h2 class="label" id="average-heading">Average BTC/USD</h2>
+              <span class="cyber-badge cyber-badge--outline" id="status" role="status">Connecting</span>
+            </div>
+            <p class="hero-price cyber-text-glow" id="avg">Loading...</p>
+            <p class="hero-caption">USD per bitcoin · Average of stored provider quotes</p>
+            <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
+          </section>
+
+        </div>
 
         <section class="cyber-card cyber-card--yellow session" aria-labelledby="session-heading">
           <div class="cyber-card__header"><h2 class="cyber-card__title" id="session-heading">Feed activity</h2></div>
@@ -222,19 +221,14 @@
             name.className = "label";
             name.textContent = source.source;
             const price = document.createElement("p");
-            price.className = "value";
+            price.className = "value cyber-glitch";
             price.textContent = fmt.format(source.price_usd);
+            price.dataset.text = price.textContent;
             const unit = document.createElement("p");
             unit.className = "source-unit";
             unit.textContent = "USD / BTC";
             surface.append(name, price, unit);
             node.appendChild(surface);
-            for (const color of ["cyan", "magenta"]) {
-              const glitch = surface.cloneNode(true);
-              glitch.classList.add("source-card__glitch", `source-card__glitch--${color}`);
-              glitch.setAttribute("aria-hidden", "true");
-              node.appendChild(glitch);
-            }
             sourcesEl.appendChild(node);
           }
 
