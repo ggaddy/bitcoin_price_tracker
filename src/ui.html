@@ -142,6 +142,7 @@
 
     <script>
       const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+      const formatPrice = (value) => fmt.format(value).replace(/,/g, " ");
       const avgEl = document.getElementById("avg");
       const spreadEl = document.getElementById("spread");
       const updatedEl = document.getElementById("updated");
@@ -196,9 +197,9 @@
             setStatus("LIVE");
           }
 
-          avgEl.textContent = data.average_price != null ? fmt.format(data.average_price) : "Unavailable";
+          avgEl.textContent = data.average_price != null ? formatPrice(data.average_price) : "Unavailable";
           avgEl.dataset.text = avgEl.textContent;
-          spreadEl.textContent = data.spread != null ? fmt.format(data.spread) : "-";
+          spreadEl.textContent = data.spread != null ? formatPrice(data.spread) : "-";
           updatedEl.textContent = data.fetched_at_unix
             ? new Date(data.fetched_at_unix * 1000).toLocaleString()
             : "-";
@@ -224,7 +225,7 @@
             name.textContent = source.source;
             const price = document.createElement("p");
             price.className = "value cyber-glitch";
-            price.textContent = fmt.format(source.price_usd);
+            price.textContent = formatPrice(source.price_usd);
             price.dataset.text = price.textContent;
             const unit = document.createElement("p");
             unit.className = "source-unit";
