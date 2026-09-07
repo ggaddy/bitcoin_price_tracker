@@ -23,6 +23,8 @@
       .intro h2 { margin-top: 10px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.02em; }
       .intro h2 span { color: var(--color-text-secondary); font-weight: 400; }
       .dashboard { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 20px; }
+      .card-shadow, .source-card { filter: drop-shadow(0 8px 12px #0006); }
+      .session { height: 100%; }
       .hero { height: 100%; padding: 30px; background: radial-gradient(ellipse at top right, #00f0ff0c, transparent 65%), var(--color-bg-secondary); }
       .label { color: var(--color-text-secondary); text-transform: uppercase; }
       .hero-price { margin: 24px 0 10px; font-family: var(--font-mono); font-size: clamp(32px, 5.8vw, 76px); font-weight: 700; letter-spacing: -.065em; line-height: 1.2; color: var(--cyber-cyan-500); overflow-wrap: anywhere; }
@@ -50,7 +52,7 @@
       .source-card .value { margin: 18px 0 8px; font-size: clamp(18px, 2vw, 25px); overflow-wrap: anywhere; }
       .source-unit { color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; }
       .empty-state { grid-column: 1 / -1; padding: 28px; border: 1px dashed var(--color-border-default); color: var(--color-text-secondary); font-size: 14px; }
-      .feed-terminal { margin-top: 28px; }
+      .feed-terminal { margin-top: 28px; box-shadow: 0 8px 24px #0006; }
       .feed-terminal .cyber-terminal__body { font-size: 13px; }
       .terminal-label { color: var(--cyber-cyan-500); margin-right: 10px; }
       #note { color: var(--color-text-secondary); overflow-wrap: anywhere; }
@@ -92,19 +94,20 @@
       </div>
 
       <div class="dashboard">
-        <div class="cyber-neon-border">
+        <div class="card-shadow">
           <section class="cyber-card hero" aria-labelledby="average-heading">
             <div class="hero-heading">
               <h2 class="label" id="average-heading">Average BTC/USD</h2>
               <span class="cyber-badge cyber-badge--outline" id="status" role="status">Connecting</span>
             </div>
-            <p class="hero-price cyber-text-glow" id="avg">Loading...</p>
+            <p class="hero-price cyber-text-glow cyber-glitch" id="avg" data-text="Loading...">Loading...</p>
             <p class="hero-caption">USD per bitcoin · Average of stored provider quotes</p>
             <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
           </section>
 
         </div>
 
+        <div class="card-shadow">
         <section class="cyber-card cyber-card--yellow session" aria-labelledby="session-heading">
           <div class="cyber-card__header"><h2 class="cyber-card__title" id="session-heading">Feed activity</h2></div>
           <dl>
@@ -112,6 +115,7 @@
             <div><dt class="label">Active viewers</dt><dd class="value" id="viewers">0</dd></div>
           </dl>
         </section>
+        </div>
       </div>
 
       <section id="provider-quotes" aria-labelledby="sources-heading">
@@ -196,6 +200,7 @@
           }
 
           avgEl.textContent = data.average_price != null ? fmt.format(data.average_price) : "Unavailable";
+          avgEl.dataset.text = avgEl.textContent;
           spreadEl.textContent = data.spread != null ? fmt.format(data.spread) : "-";
           updatedEl.textContent = data.fetched_at_unix
             ? new Date(data.fetched_at_unix * 1000).toLocaleString()
@@ -252,6 +257,7 @@
         } catch (err) {
           setStatus("OFFLINE", "status-bad");
           avgEl.textContent = "Unavailable";
+          avgEl.dataset.text = avgEl.textContent;
           noteEl.textContent = "Dashboard refresh failed before price data could be loaded.";
           warningsEl.replaceChildren();
           const warning = document.createElement("li");
