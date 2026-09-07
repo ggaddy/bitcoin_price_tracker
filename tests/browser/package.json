@@ -1,0 +1,6 @@
+{
+  "name": "btc-dashboard-browser-tests",
+  "private": true,
+  "scripts": { "test": "node --test dashboard.test.mjs" },
+  "devDependencies": { "playwright": "1.63.0" }
+}

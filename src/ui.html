@@ -59,6 +59,15 @@
       .footer { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--color-border-default); color: var(--color-text-secondary); font-size: 10px; flex-wrap: wrap; }
       .footer a { color: var(--cyber-cyan-500); text-underline-offset: 4px; }
       a:focus-visible { outline: 2px solid var(--cyber-cyan-500); outline-offset: 5px; }
+      .source-detail, .source-error { margin-top: 10px; font-size: 12px; overflow-wrap: anywhere; }
+      .source-error { color: var(--cyber-yellow-500); }
+      .source-card .label, .source-unit, #coverage, .hero-heading { overflow-wrap: anywhere; }
+      .hero-heading { flex-wrap: wrap; }
+      .dashboard > *, .session dd { min-width: 0; }
+      html.page-hidden *, html.page-hidden *::before, html.page-hidden *::after { animation-play-state: paused !important; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+      }
       @media (max-width: 900px) { .sources-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 640px) {
         main { padding: 20px 16px; }
@@ -95,9 +104,10 @@
           <section class="cyber-card hero" aria-labelledby="average-heading">
             <div class="hero-heading">
               <h2 class="label" id="average-heading">Indicative average BTC/USD</h2>
-              <span class="cyber-badge cyber-badge--outline" id="status" role="status">Connecting</span>
+              <span class="cyber-badge cyber-badge--outline" id="status" role="status" aria-live="polite" aria-atomic="true">Connecting</span>
             </div>
             <p class="hero-price cyber-glitch" id="avg" data-text="Loading...">Loading...</p>
+            <p class="hero-caption" id="coverage">Waiting for source coverage…</p>
             <p class="hero-caption">USD per bitcoin · Mix of spot, bid, last-trade and aggregate quotes</p>
             <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
           </section>
@@ -108,7 +118,7 @@
         <section class="cyber-card cyber-card--yellow session" aria-labelledby="session-heading">
           <div class="cyber-card__header"><h2 class="cyber-card__title" id="session-heading">Feed activity</h2></div>
           <dl>
-            <div><dt class="label">Last snapshot</dt><dd class="value" id="updated">-</dd></div>
+            <div><dt class="label">Last price update</dt><dd class="value" id="updated">-</dd></div>
             <div><dt class="label">Active viewers</dt><dd class="value" id="viewers">0</dd></div>
           </dl>
         </section>
@@ -133,184 +143,13 @@
         <div class="cyber-terminal__body">
           <p><span class="terminal-label" aria-hidden="true">&gt;</span><span id="note">Connecting to the price feed. Updates run while this tab is visible.</span></p>
           <h3 class="warning-heading">Warnings</h3>
-          <ul class="warnings" id="warnings" aria-live="polite"><li>Waiting for the first report…</li></ul>
+          <ul class="warnings" id="warnings"><li>Waiting for the first report…</li></ul>
         </div>
       </section>
       <noscript><p class="cyber-alert">Enable JavaScript to load prices and keep this dashboard updated.</p></noscript>
       <footer class="footer"><span>BTC / USD</span><span>Interface powered by <a href="https://github.com/sebyx07/cybercore-css/">CYBERCORE CSS</a></span></footer>
     </main>
 
-    <script>
-      const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-      const formatPrice = (value) => fmt.format(value).replace(/,/g, "\u2009");
-      const avgEl = document.getElementById("avg");
-      const spreadEl = document.getElementById("spread");
-      const updatedEl = document.getElementById("updated");
-      const viewersEl = document.getElementById("viewers");
-      const statusEl = document.getElementById("status");
-      const noteEl = document.getElementById("note");
-      const sourcesEl = document.getElementById("sources");
-      const warningsEl = document.getElementById("warnings");
-      const sessionKey = "btc-matrix-session-id";
-      const sessionId = sessionStorage.getItem(sessionKey) || crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, "_");
-      sessionStorage.setItem(sessionKey, sessionId);
-      let refreshTimer = null;
-
-      function setStatus(label, className) {
-        statusEl.textContent = label;
-        statusEl.classList.remove("status-bad", "status-warn");
-        if (className) {
-          statusEl.classList.add(className);
-        }
-      }
-
-      async function sendPresence(active) {
-        const payload = JSON.stringify({ session_id: sessionId, active });
-
-        if (!active && navigator.sendBeacon) {
-          const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon("/api/presence", blob);
-          return;
-        }
-
-        await fetch("/api/presence", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payload,
-          keepalive: !active,
-        });
-      }
-
-      async function refresh() {
-        try {
-          const res = await fetch("/api/price");
-          const data = await res.json();
-
-          viewersEl.textContent = String(data.active_viewers ?? 0);
-
-          if (data.status === "LIVE") {
-            setStatus("LIVE");
-          } else if (data.status === "DEGRADED" || data.status === "STALE") {
-            setStatus(data.status, "status-warn");
-          } else {
-            setStatus("UNAVAILABLE", "status-bad");
-          }
-
-          avgEl.textContent = data.average_price != null ? formatPrice(data.average_price) : "Unavailable";
-          avgEl.dataset.text = avgEl.textContent;
-          spreadEl.textContent = data.spread != null ? formatPrice(data.spread) : "-";
-          updatedEl.textContent = data.fetched_at_unix
-            ? new Date(data.fetched_at_unix * 1000).toLocaleString()
-            : "-";
-
-          if (data.refresh_succeeded) {
-            noteEl.textContent = "Price data refreshed successfully for this cycle.";
-          } else if (data.refresh_skipped_reason) {
-            noteEl.textContent = data.refresh_skipped_reason;
-          } else if (data.stale) {
-            noteEl.textContent = "Serving older price data because refresh did not complete.";
-          } else {
-            noteEl.textContent = "Showing the latest stored price data.";
-          }
-
-          sourcesEl.innerHTML = "";
-          for (const source of data.sources || []) {
-            const node = document.createElement("article");
-            node.className = "source-card";
-            const surface = document.createElement("div");
-            surface.className = "cyber-card source-card__surface";
-            const name = document.createElement("h3");
-            name.className = "label";
-            name.textContent = source.source;
-            const price = document.createElement("p");
-            price.className = "value cyber-glitch";
-            price.textContent = formatPrice(source.price_usd);
-            price.dataset.text = price.textContent;
-            const unit = document.createElement("p");
-            unit.className = "source-unit";
-            unit.textContent = "USD / BTC";
-            surface.append(name, price, unit);
-            node.appendChild(surface);
-            sourcesEl.appendChild(node);
-          }
-
-          if (!sourcesEl.children.length) {
-            const empty = document.createElement("p");
-            empty.className = "empty-state";
-            empty.textContent = "No provider quotes available. Waiting for a successful refresh.";
-            sourcesEl.appendChild(empty);
-          }
-
-          warningsEl.innerHTML = "";
-          if ((data.warnings || []).length === 0) {
-            warningsEl.innerHTML = "<li>None</li>";
-          } else {
-            for (const warning of data.warnings) {
-              const li = document.createElement("li");
-              li.textContent = warning;
-              warningsEl.appendChild(li);
-            }
-          }
-        } catch (err) {
-          setStatus("OFFLINE", "status-bad");
-          avgEl.textContent = "Unavailable";
-          avgEl.dataset.text = avgEl.textContent;
-          noteEl.textContent = "Dashboard refresh failed before price data could be loaded.";
-          warningsEl.replaceChildren();
-          const warning = document.createElement("li");
-          warning.textContent = `UI fetch failed: ${String(err)}`;
-          warningsEl.appendChild(warning);
-        }
-      }
-
-      async function cycle() {
-        if (document.visibilityState !== "visible") {
-          return;
-        }
-
-        await sendPresence(true);
-        await refresh();
-      }
-
-      function startTracking() {
-        if (refreshTimer !== null || document.visibilityState !== "visible") {
-          return;
-        }
-
-        cycle();
-        refreshTimer = setInterval(cycle, 5000);
-      }
-
-      function stopTracking() {
-        if (refreshTimer !== null) {
-          clearInterval(refreshTimer);
-          refreshTimer = null;
-        }
-
-        sendPresence(false).catch(() => {});
-        setStatus("IDLE", "status-warn");
-        noteEl.textContent = "Tracking paused while this tab is hidden.";
-      }
-
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") {
-          startTracking();
-        } else {
-          stopTracking();
-        }
-      });
-
-      window.addEventListener("pagehide", () => {
-        sendPresence(false).catch(() => {});
-      });
-
-      if (document.visibilityState === "visible") {
-        startTracking();
-      } else {
-        setStatus("IDLE", "status-warn");
-        noteEl.textContent = "Open this tab to start upstream refresh tracking.";
-      }
-
-    </script>
+    <script src="/assets/dashboard.js" defer></script>
   </body>
 </html>

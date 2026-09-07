@@ -1,30 +1,8 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::Duration;
 
 use thirtyfour::prelude::*;
 
-use crate::{
-    app::router,
-    config::upstream_client_builder,
-    models::{
-        SnapshotRecord,
-        source_contract::{QuoteKind, StoredQuote},
-    },
-    state::AppState,
-    storage::{init_db, store_snapshot},
-    util::now_unix,
-};
-
-fn temp_db_path(test_name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-
-    std::env::temp_dir().join(format!("bitcoin-price-tracker-{test_name}-{unique}.db"))
-}
+use crate::{app::router, test_support::TestApp};
 
 fn browser_test_host() -> String {
     std::env::var("SELENIUM_APP_HOST").unwrap_or_else(|_| "host.containers.internal".to_string())
@@ -56,35 +34,12 @@ async fn wait_for_text(driver: &WebDriver, element_id: &str) -> WebDriverResult<
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a WebDriver server such as Selenium or chromedriver"]
 async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
-    let db_path = temp_db_path("selenium");
-    init_db(db_path.clone())
-        .await
-        .expect("init db for selenium test");
-    store_snapshot(
-        db_path.clone(),
-        SnapshotRecord {
-            fetched_at_unix: now_unix(),
-            sources: vec![StoredQuote {
-                source: "CoinGecko".to_string(),
-                price_usd: 70_800.53,
-                last_success_at_unix: None,
-                quote_kind: QuoteKind::Unknown,
-            }],
-            average_price: Some(70_800.53),
-            spread: Some(0.0),
-            warnings: Vec::new(),
-            refreshed_source: Some("CoinGecko".to_string()),
-        },
-    )
-    .await
-    .expect("seed sqlite snapshot for selenium test");
-
-    let client = upstream_client_builder()
-        .user_agent("bitcoin-price-tracker/selenium-test")
-        .build()
-        .expect("build http client for selenium test");
-    let state = AppState::new(client, db_path.clone());
-    let app = router(state);
+    // Local providers and a manual clock prevent accidental public upstream calls,
+    // even when browser startup takes longer than the normal freshness window.
+    let fixture = TestApp::new().await;
+    fixture.presence(true).await;
+    fixture.price().await;
+    let app = router(fixture.state.clone());
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
         .await
         .expect("bind ephemeral test listener");
@@ -97,7 +52,13 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
             .expect("run selenium smoke test server");
     });
 
-    let driver = build_test_driver().await?;
+    let driver = match build_test_driver().await {
+        Ok(driver) => driver,
+        Err(error) => {
+            server.abort();
+            return Err(error);
+        }
+    };
     let result = async {
         let app_url = format!("http://{}:{}/", browser_test_host(), address.port());
         driver.goto(&app_url).await?;
@@ -117,7 +78,7 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
         let source = wait_for_text(&driver, "sources").await?;
 
         assert!(
-            average.contains("70,800.53"),
+            average.replace(['\u{2009}', ','], "").contains("100150.00"),
             "unexpected average text: {average}"
         );
         assert_eq!(status, "LIVE");
@@ -132,7 +93,6 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
 
     let quit_result = driver.quit().await;
     server.abort();
-    let _ = fs::remove_file(&db_path);
 
     result?;
     quit_result

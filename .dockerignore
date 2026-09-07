@@ -3,3 +3,5 @@ target
 .gitignore
 README.md
 project_plan
+
+tests/browser/node_modules

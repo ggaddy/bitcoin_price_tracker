@@ -169,14 +169,6 @@ fn prune_snapshots_to_latest(conn: &Connection) -> Result<(), String> {
 }
 
 #[cfg(test)]
-pub(crate) async fn store_snapshot(
-    db_path: PathBuf,
-    snapshot: SnapshotRecord,
-) -> Result<(), String> {
-    run_blocking(move || store_snapshot_sync(&db_path, snapshot)).await
-}
-
-#[cfg(test)]
 fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), String> {
     store_refresh_sync(db_path, Some(snapshot), Vec::new())
 }

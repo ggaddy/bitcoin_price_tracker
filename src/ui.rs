@@ -6,3 +6,13 @@ pub(crate) async fn cybercore_css() -> impl axum::response::IntoResponse {
         include_str!("vendor/cybercore-0.3.0.min.css"),
     )
 }
+
+pub(crate) async fn dashboard_js() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        include_str!("dashboard.js"),
+    )
+}

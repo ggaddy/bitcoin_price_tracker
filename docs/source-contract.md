@@ -169,5 +169,10 @@ Both legacy schema variants are exercised through migration, unknown-age serving
 partial refresh, restart, expiration, full recovery, and another restart. Empty
 and failed cold starts return 503 with independent health; unreadable storage
 returns 500 without exposing internal details.
-P4 adds per-source metadata and coverage to the dashboard; its status badge
-already consumes the server's explicit status.
+The dashboard displays per-source metadata, health, and aggregate coverage.
+It advances reported ages with monotonic elapsed time, removes expired quotes
+from displayed aggregates, and can downgrade LIVE locally. Only a new server
+response can make an unknown, future, or stale observation fresh. Transport
+failures retain quote cards with an OFFLINE warning; failed heartbeats degrade
+an otherwise LIVE display. Last price update uses the latest nonfuture source
+observation time, rather than snapshot persistence time.

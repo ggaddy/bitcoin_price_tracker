@@ -72,6 +72,26 @@ the response reports the current viewer count. Future snapshot timestamps have
 unknown age (`fetched_age_seconds: null`) and are treated as stale, while the
 monotonic attempt gate still prevents rapid retries.
 
+## Dashboard behavior
+
+Each page creates a fresh in-memory presence ID, so opened or duplicated tabs
+cannot inherit another tab's identity. Browser storage is not required. UUID
+support falls back to secure random bytes; missing random/request capabilities
+produce an explicit Unsupported state.
+
+Visible pages run independent presence and price loops, waiting five seconds
+between completed requests. Presence has a three-second deadline and prices an
+eight-second deadline, including response bodies. Hidden pages cancel requests,
+stop timers, and send inactive presence; returning resumes one set of loops.
+Failures retry automatically and retain received quotes with an age warning.
+
+Source cards show quote kind, age, freshness, and the latest provider error,
+including providers without quotes. Coverage and indicative aggregates update
+as quotes expire between responses; unknown/future quotes never become fresh
+locally. Last price update uses source observation times. Status transitions
+are announced politely, and decorative CSS animation pauses while hidden and
+respects reduced-motion preferences.
+
 ## Local
 
 ```bash
@@ -113,8 +133,30 @@ not publish images. The workflow must be present in the tagged commit.
 - Default DB: `data/bitcoin_prices.db`
 - Override DB: `DATABASE_PATH=/custom/path/bitcoin_prices.db`
 
-## Browser Test
+## Browser tests
 
-- Selenium smoke test uses `thirtyfour` and is ignored by default
-- End-to-end runner: `scripts/run_selenium_smoke_test.sh`
-- Useful overrides: `CONTAINER_ENGINE`, `WEBDRIVER_URL`, `SELENIUM_APP_HOST`, `SELENIUM_WAIT_SECONDS`
+The deterministic dashboard suite uses pinned Playwright/Chromium and Node.js
+20 or newer. Install once, then run from the repository root:
+
+```bash
+npm ci --prefix tests/browser
+npm exec --prefix tests/browser -- playwright install chromium
+npm test --prefix tests/browser
+```
+
+On a Linux host missing browser system libraries, use Playwright's
+`install --with-deps chromium` command. Tests serve the actual dashboard assets
+locally, intercept every API request with fixtures, and reject external requests.
+The suite covers freshness, recovery, request deadlines, visibility changes,
+identity fallbacks, safe rendering, reduced motion, and narrow layouts.
+
+To verify the embedded assets from a running local Rust app instead of the test
+asset server, use `BTC_APP_URL=http://127.0.0.1:3000 npm test --prefix tests/browser`.
+API requests remain mocked. Optional `BTC_SCREENSHOT_DIR=/existing/directory`
+writes desktop and narrow-layout screenshots.
+
+The separate Rust Selenium smoke test uses local providers and a manual clock.
+It requires a WebDriver server and remains ignored by default. Its existing
+runner is `scripts/run_selenium_smoke_test.sh`; useful overrides include
+`CONTAINER_ENGINE`, `WEBDRIVER_URL`, `SELENIUM_APP_HOST`, and `SELENIUM_WAIT_SECONDS`.
+Runner portability and cleanup improvements remain P5.6 work.
