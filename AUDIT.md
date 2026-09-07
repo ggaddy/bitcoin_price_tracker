@@ -1,17 +1,17 @@
 **Project audit and improvement plan — September 6, 2026**
 
-Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b`; P2.1 is implemented and verified, with evidence recorded below.
+Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is implemented and verified in the working tree, not yet committed.
 
 The project is a compact Rust/Axum application with a self-contained dashboard, four upstream providers, and SQLite persistence. Its module boundaries are reasonable for its size. The most valuable improvements concern refresh reliability and the accuracy of the data shown to users.
 
 **Implementation progress — updated September 6, 2026**
 
-Audit and implementation planning are complete. Implementation: **5 of 30 tasks complete**. Next task: **P2.2 — bound network work and introduce structured provider errors**.
+Audit and implementation planning are complete. Implementation: **6 of 30 tasks complete**. Next task: **P2.3 — introduce explicit refresh coordination**.
 
 | Phase | Status | Tasks complete | Depends on | Completion evidence |
 | --- | --- | --- | --- | --- |
 | P1 — Consistent SQLite reads | Complete | 4/4 | None | Race reproduced before the fix; all 5 storage tests pass; full suite 10 passed / 1 ignored; formatting and Clippy pass |
-| P2 — Refresh reliability | In progress | 1/7 | P1 | P2.1 complete: local provider fixtures and manual clock; full suite 15 passed / 1 ignored; formatting and Clippy pass |
+| P2 — Refresh reliability | In progress | 2/7 | P1 | P2.1–P2.2 complete: fixtures, deadlines, and typed errors; full suite 26 passed / 1 ignored; formatting and Clippy pass |
 | P3 — Source freshness and validation | Not started | 0/6 | P2 | — |
 | P4 — Dashboard resilience | Not started | 0/6 | P3 for freshness display; lifecycle work can start earlier | — |
 | P5 — Delivery and deployment | Not started | 0/7 | Final verification depends on P1–P4; CI can start with P1 | — |
@@ -100,7 +100,7 @@ P1 implementation evidence (September 6, 2026):
 Files: `src/config.rs`, `src/state.rs`, `src/main.rs`, `src/handlers.rs`, `src/presence.rs`, `src/pricing.rs`, `src/util.rs`, and `Cargo.toml`. Add a small `src/refresh.rs` if separating orchestration from provider parsing makes the code easier to follow.
 
 - [x] **P2.1 — Add deterministic test seams.** Inject provider endpoints and a clock through application construction. Use fixed production HTTPS endpoints and local mock HTTP servers in tests; endpoints must not come from public request input. Add only the test dependencies/features needed for controlled delays, time advancement, and HTTP route tests. Record upstream request counts.
-- [ ] **P2.2 — Bound network work.** Configure connect and total timeouts in the shared HTTP client. Introduce a provider error type that distinguishes transport/timeout, HTTP status and retry timing, invalid payload, and invalid price; retain useful diagnostics for logs without exposing internal database paths to clients.
+- [x] **P2.2 — Bound network work.** Configure connect and total timeouts in the shared HTTP client. Introduce a provider error type that distinguishes transport/timeout, HTTP status and retry timing, invalid payload, and invalid price; retain useful diagnostics for logs without exposing internal database paths to clients.
 - [ ] **P2.3 — Introduce explicit refresh coordination.** Replace success-only scheduling with coordinator state for rotation, attempt timing, and provider retry eligibility. Use `try_lock` or equivalent ownership so another request cannot queue behind upstream work. On contention, return the database snapshot with a refresh-in-progress reason. Capture the pending full-refresh generation so completing an older batch cannot clear a newer activation. Derive response viewer counts from current presence after work completes.
 - [ ] **P2.4 — Keep partial successes.** Replace fail-fast all-provider joining with collection of each provider's result. Merge successes with retained quotes and record failures individually. Advance the cursor after an attempted provider even on failure. Keep the previous quote snapshot intact if no provider succeeds; a database failure must not count as a successful refresh or remove attempt cooldowns.
 - [ ] **P2.5 — Apply cadence and retry policy.** Implement both global gates and per-provider eligibility from the contract. Skip cooling-down providers when selecting the next source; do not consume an attempt when none are eligible. Parse supported `Retry-After` forms defensively, never retry in a tight loop, and reset failure counts after successful recovery. Keep attempt/retry state in memory; P3 adds persisted health for display.
@@ -116,6 +116,18 @@ P2.1 implementation evidence (September 6, 2026):
 - Added Tower's `util` feature as a direct development dependency, reusing the already locked version. Declared Tokio `net` and `sync` features explicitly. `Cargo.lock` changes only to record the direct Tower dependency; no package versions changed.
 - Final checks ran in an ephemeral Rust 1.85.1 container with current `src` and `Cargo.toml` mounted read-only: `cargo fmt --all -- --check` passed; `cargo clippy --locked --release --all-targets -- -D warnings` passed; `cargo test --locked --release`: **15 passed, 0 failed, 1 ignored**. `git diff --check` passed on the host. No public provider requests were needed; the Selenium test was not run.
 - This task preserves existing production scheduling and clock semantics. Production network deadlines belong to P2.2, nonblocking refresh coordination to P2.3, and monotonic presence timing to P2.6. P2 remains in progress.
+
+P2.2 implementation evidence (September 6, 2026):
+
+- Added a shared HTTP client builder in `src/config.rs`, used by production startup and test clients. It sets a **two-second connect deadline** and **five-second total request deadline**, including response-body transfer. README now documents these limits and price validation.
+- Added `src/errors.rs` with provider identity and distinct timeout, transport, HTTP, invalid-payload, and invalid-price categories. Centralized HTTP response handling in `src/pricing.rs`. HTTP failures preserve status and parsed `Retry-After` hints as either a duration or an absolute date; invalid/overflowing hints are ignored. Retry scheduling and backoff still belong to P2.5.
+- Provider adapters now reject nonnumeric, nonfinite, and nonpositive prices before persistence. This completes the shared numeric guard anticipated in P3.4; pair verification, Kraken error payload semantics, and quote-type labeling remain outstanding there.
+- Added `RefreshError` to distinguish provider failures from persistence failures. Safe display messages go to API warnings, while diagnostic errors and their causes remain available to logs. The pre-refresh database inspection failure also uses a generic public message. Regression tests verify that failed writes retain cached data and do not expose a private database path.
+- Added 11 tests and updated the existing provider-error fixture test to assert error categories. Paused Tokio time tests exercise the production two-second deadline during a stalled TLS handshake and the five-second deadline both before headers and during a body read. Other cases cover truncated bodies, missing fields, invalid prices across all providers, retry hints, error redaction, and cached fallback/lock release after timeout.
+- The truncated-body regression initially exposed Reqwest wrapping a failed transfer as a decode error. Classification now checks the underlying cause so transport failures stay distinct from malformed JSON. The regression passes after that correction.
+- Added the already locked `httpdate` crate as a direct dependency, and Tokio `test-util`/`io-util` development features for virtual time and local TCP fixtures. No package versions changed. The manual application clock still controls snapshot/presence timestamps; paused Tokio time controls network deadlines independently.
+- Final checks ran in an ephemeral Rust 1.85.1 container using current workspace sources: `cargo fmt --all -- --check` passed; `cargo clippy --locked --release --all-targets -- -D warnings` passed; `cargo test --locked --release`: **26 passed, 0 failed, 1 ignored**. `git diff --check` passed on the host. The new tests use loopback fixtures, not public provider calls. Selenium and final-image deployment checks were not run for this task.
+- P2.3–P2.7 remain open: refresh ownership still waits on the mutex, full refresh still fails as a batch, and attempt/backoff scheduling and monotonic presence timing have not been implemented.
 
 **P3 — Per-source freshness and validated prices (6 tasks)**
 
@@ -176,6 +188,8 @@ Append one row per completed task or material decision. Keep historical baseline
 | 2026-09-06 | P1.4 | Completed P1 validation and updated progress to 4/30 | Rust 1.85.1: full suite 10 passed / 1 ignored, formatting, Clippy, and diff checks pass; working-tree changes, not committed | P2.1: add provider/clock test seams |
 | 2026-09-06 | P1 commit recorded | P1 changes and tracker committed | `9bce95b` (`p1 complete`) | Continue P2.1 |
 | 2026-09-06 | P2.1 | Injected endpoints/time; added local HTTP fixtures, manual time advancement, response gates, request counters, and five tests; progress 5/30 | Rust 1.85.1: full suite 15 passed / 1 ignored; formatting, Clippy, and diff checks pass | P2.2: add production deadlines and structured provider errors |
+| 2026-09-06 | P2.1 commit/push recorded | P2.1 committed and pushed to `origin/master` | `6990aa6` (`Add deterministic provider and clock test seams`) | Continue P2.2 |
+| 2026-09-06 | P2.2 | Added shared deadlines, typed errors, retry hints, numeric guards, safe API warnings, and 11 tests; progress 6/30 | Rust 1.85.1: full suite 26 passed / 1 ignored; formatting, Clippy, and diff checks pass; working-tree changes | P2.3: implement nonblocking refresh coordination |
 
 **Baseline validation performed — September 6, 2026**
 

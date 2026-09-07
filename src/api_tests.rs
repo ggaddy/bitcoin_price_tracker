@@ -4,11 +4,72 @@ use axum::http::StatusCode;
 use serde_json::json;
 
 use crate::{
+    config::UPSTREAM_REQUEST_TIMEOUT,
     presence::active_viewer_count,
     pricing::UpstreamSource,
     storage::load_latest_snapshot,
     test_support::{TEST_NOW, TestApp},
 };
+
+#[tokio::test]
+async fn timed_out_refresh_serves_the_previous_snapshot_and_releases_the_lock() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    provider.wait_for_request().await; // Consume the initial successful refresh's signal.
+    let release = provider.hold_responses();
+    app.clock.advance(Duration::from_secs(10));
+
+    let response = app.price();
+    tokio::pin!(response);
+    tokio::select! {
+        _ = provider.wait_for_request() => {}
+        _ = &mut response => panic!("request finished before the held provider timed out"),
+    }
+    tokio::time::pause();
+    tokio::time::advance(UPSTREAM_REQUEST_TIMEOUT).await;
+    // Resume before SQLite's blocking work so automatic time advances cannot race the route deadline.
+    tokio::time::resume();
+    let (status, data) = response.await;
+    release.add_permits(1);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["fetched_at_unix"], TEST_NOW);
+    assert_eq!(data["average_price"], 100_150.0);
+    assert_eq!(data["refresh_succeeded"], false);
+    assert!(
+        data["warnings"]
+            .to_string()
+            .contains("CoinGecko request timed out")
+    );
+    assert!(app.state.refresh_lock.try_lock().is_ok());
+}
+
+#[tokio::test]
+async fn storage_failure_warnings_hide_internal_details() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_snapshot BEFORE INSERT ON price_snapshots
+        BEGIN SELECT RAISE(ABORT, 'private error at /private/fixture.db'); END;",
+    )
+    .unwrap();
+    app.clock.advance(Duration::from_secs(10));
+    let (status, data) = app.price().await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["fetched_at_unix"], TEST_NOW);
+    assert_eq!(data["average_price"], 100_150.0);
+    assert_eq!(data["refresh_succeeded"], false);
+    assert!(
+        data["warnings"]
+            .to_string()
+            .contains("Failed to store refreshed price data")
+    );
+    assert!(!data.to_string().contains("/private/fixture.db"));
+    assert!(!data.to_string().contains("private error"));
+}
 
 #[tokio::test]
 async fn no_viewers_never_request_upstreams() {

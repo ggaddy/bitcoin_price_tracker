@@ -10,6 +10,8 @@ Rust BTC/USD tracker with a terminal-style UI.
 - Refreshes only while a visible tab is active
 - Rotates upstream checks one source at a time
 - Skips refreshes when the latest snapshot is under 10 seconds old
+- Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
+- Requires finite, positive prices; serves the previous snapshot when a refresh fails and stored data is available
 
 ## Local
 

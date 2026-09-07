@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.1"
+httpdate = "1.0.3"
 reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.34.0", features = ["bundled"] }
 serde = { version = "1.0.217", features = ["derive"] }
@@ -15,4 +16,5 @@ tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 thirtyfour = "0.36.1"
+tokio = { version = "1.43.0", features = ["io-util", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }

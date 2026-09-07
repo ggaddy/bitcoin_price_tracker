@@ -20,8 +20,12 @@ use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle, time::timeout};
 use tower::ServiceExt;
 
 use crate::{
-    app::router, config::UpstreamEndpoints, pricing::UpstreamSource, state::AppState,
-    storage::init_db, util::Clock,
+    app::router,
+    config::{UpstreamEndpoints, upstream_client_builder},
+    pricing::UpstreamSource,
+    state::AppState,
+    storage::init_db,
+    util::Clock,
 };
 
 pub(crate) const TEST_NOW: i64 = 1_700_000_000;
@@ -228,11 +232,7 @@ impl TestApp {
         init_db(db_path.clone()).await.unwrap();
         let upstreams = MockUpstreams::start().await;
         let clock = Arc::new(ManualClock(AtomicI64::new(TEST_NOW)));
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
+        let client = upstream_client_builder().no_proxy().build().unwrap();
         let state =
             AppState::with_dependencies(client, db_path, upstreams.endpoints(), clock.clone());
         Self {

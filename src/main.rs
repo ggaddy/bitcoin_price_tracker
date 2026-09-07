@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod errors;
 mod handlers;
 mod models;
 mod presence;
@@ -10,11 +11,13 @@ mod ui;
 mod util;
 
 use app::router;
-use reqwest::Client;
 use state::AppState;
 use tracing::info;
 
-use crate::{config::database_path, storage::init_db};
+use crate::{
+    config::{database_path, upstream_client_builder},
+    storage::init_db,
+};
 
 #[tokio::main]
 async fn main() {
@@ -25,8 +28,7 @@ async fn main() {
         )
         .init();
 
-    let client = Client::builder()
-        .user_agent("bitcoin-price-tracker/0.1")
+    let client = upstream_client_builder()
         .build()
         .expect("failed to build HTTP client");
 

@@ -1,10 +1,11 @@
-use reqwest::Client;
+use reqwest::{Client, Response, header::RETRY_AFTER};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::try_join;
 
 use crate::{
     config::UpstreamEndpoints,
+    errors::{ProviderError, ProviderErrorKind, RefreshError, RetryAfter},
     models::{SnapshotRecord, SourcePrice},
     state::AppState,
     storage::store_snapshot,
@@ -21,7 +22,7 @@ pub(crate) enum UpstreamSource {
 impl UpstreamSource {
     const ALL: [Self; 4] = [Self::CoinGecko, Self::Coinbase, Self::Kraken, Self::Gemini];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::CoinGecko => "CoinGecko",
             Self::Coinbase => "Coinbase",
@@ -53,125 +54,134 @@ impl UpstreamSource {
     }
 }
 
-async fn fetch_coingecko(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
-    let value: Value = client
+async fn fetch_json(
+    client: &Client,
+    endpoint: &str,
+    provider: UpstreamSource,
+) -> Result<Value, ProviderError> {
+    let response = client
         .get(endpoint)
         .send()
         .await
-        .map_err(|error| format!("CoinGecko request failed: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("CoinGecko HTTP error: {error}"))?
+        .map_err(|error| ProviderError::from_reqwest(provider, error))?;
+    decode_response(provider, response).await
+}
+
+async fn decode_response(
+    provider: UpstreamSource,
+    response: Response,
+) -> Result<Value, ProviderError> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ProviderError {
+            provider,
+            kind: ProviderErrorKind::Http {
+                status,
+                retry_after: response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(RetryAfter::parse),
+            },
+        });
+    }
+    response
         .json()
         .await
-        .map_err(|error| format!("CoinGecko parse failed: {error}"))?;
+        .map_err(|error| ProviderError::from_reqwest(provider, error))
+}
+
+fn checked_price(
+    provider: UpstreamSource,
+    field: &'static str,
+    price: f64,
+) -> Result<SourcePrice, ProviderError> {
+    if !price.is_finite() || price <= 0.0 {
+        return Err(ProviderError::invalid_price(
+            provider,
+            field,
+            "expected a finite positive number",
+        ));
+    }
+    Ok(SourcePrice {
+        source: provider.name().to_string(),
+        price_usd: price,
+    })
+}
+
+fn parse_price(
+    provider: UpstreamSource,
+    field: &'static str,
+    amount: &str,
+) -> Result<SourcePrice, ProviderError> {
+    let price = amount
+        .parse::<f64>()
+        .map_err(|_| ProviderError::invalid_price(provider, field, "not a number"))?;
+    checked_price(provider, field, price)
+}
+
+async fn fetch_coingecko(client: &Client, endpoint: &str) -> Result<SourcePrice, ProviderError> {
+    let provider = UpstreamSource::CoinGecko;
+    let value = fetch_json(client, endpoint, provider).await?;
 
     let price = value
         .get("bitcoin")
         .and_then(|entry| entry.get("usd"))
         .and_then(Value::as_f64)
-        .ok_or_else(|| "CoinGecko response missing bitcoin.usd".to_string())?;
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing numeric bitcoin.usd"))?;
 
-    Ok(SourcePrice {
-        source: "CoinGecko".to_string(),
-        price_usd: price,
-    })
+    checked_price(provider, "bitcoin.usd", price)
 }
 
-async fn fetch_coinbase(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
-    let value: Value = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|error| format!("Coinbase request failed: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Coinbase HTTP error: {error}"))?
-        .json()
-        .await
-        .map_err(|error| format!("Coinbase parse failed: {error}"))?;
+async fn fetch_coinbase(client: &Client, endpoint: &str) -> Result<SourcePrice, ProviderError> {
+    let provider = UpstreamSource::Coinbase;
+    let value = fetch_json(client, endpoint, provider).await?;
 
     let amount = value
         .get("data")
         .and_then(|entry| entry.get("amount"))
         .and_then(Value::as_str)
-        .ok_or_else(|| "Coinbase response missing data.amount".to_string())?;
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing string data.amount"))?;
 
-    let price = amount
-        .parse::<f64>()
-        .map_err(|error| format!("Coinbase amount parse failed: {error}"))?;
-
-    Ok(SourcePrice {
-        source: "Coinbase".to_string(),
-        price_usd: price,
-    })
+    parse_price(provider, "data.amount", amount)
 }
 
-async fn fetch_kraken(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
-    let value: Value = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|error| format!("Kraken request failed: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Kraken HTTP error: {error}"))?
-        .json()
-        .await
-        .map_err(|error| format!("Kraken parse failed: {error}"))?;
+async fn fetch_kraken(client: &Client, endpoint: &str) -> Result<SourcePrice, ProviderError> {
+    let provider = UpstreamSource::Kraken;
+    let value = fetch_json(client, endpoint, provider).await?;
 
     let ticker = value
         .get("result")
         .and_then(Value::as_object)
         .and_then(|result| result.values().next())
-        .ok_or_else(|| "Kraken response missing result entry".to_string())?;
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing result entry"))?;
 
     let close_str = ticker
         .get("c")
         .and_then(Value::as_array)
         .and_then(|entries| entries.first())
         .and_then(Value::as_str)
-        .ok_or_else(|| "Kraken response missing close price at result.*.c[0]".to_string())?;
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing string result.*.c[0]"))?;
 
-    let price = close_str
-        .parse::<f64>()
-        .map_err(|error| format!("Kraken close parse failed: {error}"))?;
-
-    Ok(SourcePrice {
-        source: "Kraken".to_string(),
-        price_usd: price,
-    })
+    parse_price(provider, "result.*.c[0]", close_str)
 }
 
-async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, String> {
-    let value: Value = client
-        .get(endpoint)
-        .send()
-        .await
-        .map_err(|error| format!("Gemini request failed: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Gemini HTTP error: {error}"))?
-        .json()
-        .await
-        .map_err(|error| format!("Gemini parse failed: {error}"))?;
+async fn fetch_gemini(client: &Client, endpoint: &str) -> Result<SourcePrice, ProviderError> {
+    let provider = UpstreamSource::Gemini;
+    let value = fetch_json(client, endpoint, provider).await?;
 
     let bid = value
         .get("bid")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Gemini response missing bid".to_string())?;
+        .ok_or_else(|| ProviderError::invalid_payload(provider, "missing string bid"))?;
 
-    let price = bid
-        .parse::<f64>()
-        .map_err(|error| format!("Gemini bid parse failed: {error}"))?;
-
-    Ok(SourcePrice {
-        source: "Gemini".to_string(),
-        price_usd: price,
-    })
+    parse_price(provider, "bid", bid)
 }
 
 pub(crate) async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
     refresh_all_sources: bool,
-) -> Result<(), String> {
+) -> Result<(), RefreshError> {
     let (sources, refreshed_source) = if refresh_all_sources {
         (
             fetch_all_sources(&state.client, &state.endpoints).await?,
@@ -201,14 +211,16 @@ pub(crate) async fn refresh_snapshot(
         refreshed_source,
     };
 
-    store_snapshot(state.db_path.clone(), snapshot).await
+    store_snapshot(state.db_path.clone(), snapshot)
+        .await
+        .map_err(RefreshError::Storage)
 }
 
 async fn fetch_round_robin_source(
     client: &Client,
     endpoints: &UpstreamEndpoints,
     source: UpstreamSource,
-) -> Result<SourcePrice, String> {
+) -> Result<SourcePrice, ProviderError> {
     match source {
         UpstreamSource::CoinGecko => fetch_coingecko(client, &endpoints.coingecko).await,
         UpstreamSource::Coinbase => fetch_coinbase(client, &endpoints.coinbase).await,
@@ -220,7 +232,7 @@ async fn fetch_round_robin_source(
 async fn fetch_all_sources(
     client: &Client,
     endpoints: &UpstreamEndpoints,
-) -> Result<Vec<SourcePrice>, String> {
+) -> Result<Vec<SourcePrice>, ProviderError> {
     let (coingecko, coinbase, kraken, gemini) = try_join!(
         fetch_coingecko(client, &endpoints.coingecko),
         fetch_coinbase(client, &endpoints.coinbase),
@@ -291,10 +303,21 @@ fn summarize_prices(sources: &[SourcePrice]) -> (Option<f64>, Option<f64>) {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderValue, StatusCode, header};
+    use reqwest::{Client, Response};
     use serde_json::json;
+    use std::{error::Error, time::Duration};
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{TcpListener, TcpStream},
+        time,
+    };
 
-    use super::{UpstreamSource, fetch_round_robin_source};
-    use crate::test_support::{FixtureResponse, TestApp};
+    use super::{UpstreamSource, decode_response, fetch_json, fetch_round_robin_source};
+    use crate::{
+        config::{UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_REQUEST_TIMEOUT, upstream_client_builder},
+        errors::{ProviderErrorKind, RetryAfter},
+        test_support::{FixtureResponse, TestApp},
+    };
 
     #[tokio::test]
     async fn provider_fixtures_support_http_errors_malformed_json_and_recovery() {
@@ -315,14 +338,28 @@ mod tests {
         provider.set_response(limited);
 
         let error = fetch().await.err().expect("expected an HTTP error");
-        assert!(error.contains("429"), "{error}");
+        assert_eq!(error.provider, UpstreamSource::CoinGecko);
+        assert!(
+            matches!(&error.kind, ProviderErrorKind::Http {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            retry_after: Some(RetryAfter::Delay(delay))
+        } if *delay == Duration::from_secs(20)),
+            "{error:?}"
+        );
         assert_eq!(provider.request_count(), 1);
 
         let mut malformed = FixtureResponse::json(json!(null));
         malformed.body = "not json".to_string();
         provider.set_response(malformed);
         let error = fetch().await.err().expect("expected a JSON error");
-        assert!(error.contains("CoinGecko parse failed"), "{error}");
+        assert!(
+            matches!(
+                error.kind,
+                ProviderErrorKind::InvalidPayload { cause: Some(_), .. }
+            ),
+            "{error:?}"
+        );
+        assert!(error.source().is_some());
         assert_eq!(provider.request_count(), 2);
 
         provider.set_response(FixtureResponse::json(
@@ -332,6 +369,182 @@ mod tests {
         assert_eq!(recovered.source, "CoinGecko");
         assert_eq!(recovered.price_usd, 101_000.0);
         assert_eq!(provider.request_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn total_deadline_limits_a_provider_that_never_sends_headers() {
+        let app = TestApp::new().await;
+        let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+        let release = provider.hold_responses();
+        let fetch = fetch_round_robin_source(
+            &app.state.client,
+            &app.state.endpoints,
+            UpstreamSource::CoinGecko,
+        );
+        tokio::pin!(fetch);
+        tokio::select! {
+            _ = provider.wait_for_request() => {}
+            _ = &mut fetch => panic!("provider completed before release"),
+        }
+        time::pause();
+        time::advance(UPSTREAM_REQUEST_TIMEOUT).await;
+        let error = time::timeout(Duration::from_millis(10), fetch)
+            .await
+            .expect("total deadline fired")
+            .err()
+            .expect("expected a timeout");
+        assert!(
+            matches!(error.kind, ProviderErrorKind::Timeout(_)),
+            "{error:?}"
+        );
+        assert!(error.source().is_some());
+        release.add_permits(1);
+    }
+
+    #[tokio::test]
+    async fn connect_deadline_limits_a_stalled_tls_handshake() {
+        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let fetch = fetch_json(&client, &endpoint, UpstreamSource::CoinGecko);
+        tokio::pin!(fetch);
+        let (_socket, _) = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap(),
+            _ = &mut fetch => panic!("request completed before TLS handshake"),
+        };
+        // Keep the accepted socket open without replying to the TLS handshake.
+        time::pause();
+        time::advance(UPSTREAM_CONNECT_TIMEOUT).await;
+        let error = time::timeout(Duration::from_millis(10), fetch)
+            .await
+            .expect("connect deadline fired before total deadline")
+            .expect_err("expected a timeout");
+        assert!(
+            matches!(error.kind, ProviderErrorKind::Timeout(_)),
+            "{error:?}"
+        );
+    }
+
+    async fn partial_http_response(client: &Client) -> (Response, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/private-fixture", listener.local_addr().unwrap());
+        let (response, socket) = tokio::join!(client.get(endpoint).send(), async {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{")
+                .await
+                .unwrap();
+            socket
+        });
+        (response.unwrap(), socket)
+    }
+
+    #[tokio::test]
+    async fn total_deadline_also_covers_the_response_body() {
+        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let (response, _socket) = partial_http_response(&client).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        time::pause();
+        time::advance(UPSTREAM_REQUEST_TIMEOUT).await;
+        let error = time::timeout(
+            Duration::from_millis(10),
+            decode_response(UpstreamSource::CoinGecko, response),
+        )
+        .await
+        .expect("body deadline fired")
+        .unwrap_err();
+        assert!(
+            matches!(error.kind, ProviderErrorKind::Timeout(_)),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_body_is_a_transport_error_with_a_safe_public_message() {
+        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let (response, socket) = partial_http_response(&client).await;
+        drop(socket);
+        let error = decode_response(UpstreamSource::CoinGecko, response)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error.kind, ProviderErrorKind::Transport(_)),
+            "{error:?}"
+        );
+        assert!(error.source().is_some());
+        assert_eq!(error.to_string(), "CoinGecko request failed");
+        assert!(!error.to_string().contains("private-fixture"));
+    }
+
+    #[tokio::test]
+    async fn missing_provider_fields_are_invalid_payloads() {
+        let app = TestApp::new().await;
+        for source in UpstreamSource::ALL {
+            app.upstreams
+                .provider(source)
+                .set_response(FixtureResponse::json(json!({})));
+            let error = fetch_round_robin_source(&app.state.client, &app.state.endpoints, source)
+                .await
+                .err()
+                .expect("expected a schema error");
+            assert_eq!(error.provider, source);
+            assert!(
+                matches!(
+                    error.kind,
+                    ProviderErrorKind::InvalidPayload { cause: None, .. }
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_numeric_prices_are_rejected_by_each_provider() {
+        let app = TestApp::new().await;
+        for amount in ["0", "-1", "NaN", "inf", "-inf", "not-a-price"] {
+            for (source, body) in [
+                (
+                    UpstreamSource::Coinbase,
+                    json!({"data": {"amount": amount}}),
+                ),
+                (
+                    UpstreamSource::Kraken,
+                    json!({"result": {"XXBTZUSD": {"c": [amount]}}}),
+                ),
+                (UpstreamSource::Gemini, json!({"bid": amount})),
+            ] {
+                app.upstreams
+                    .provider(source)
+                    .set_response(FixtureResponse::json(body));
+                let error =
+                    fetch_round_robin_source(&app.state.client, &app.state.endpoints, source)
+                        .await
+                        .err()
+                        .expect("expected an invalid price");
+                assert_eq!(error.provider, source);
+                assert!(
+                    matches!(error.kind, ProviderErrorKind::InvalidPrice { .. }),
+                    "{error:?}"
+                );
+            }
+        }
+        for amount in [0.0, -1.0] {
+            app.upstreams
+                .provider(UpstreamSource::CoinGecko)
+                .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": amount}})));
+            let error = fetch_round_robin_source(
+                &app.state.client,
+                &app.state.endpoints,
+                UpstreamSource::CoinGecko,
+            )
+            .await
+            .err()
+            .expect("expected an invalid price");
+            assert!(
+                matches!(error.kind, ProviderErrorKind::InvalidPrice { .. }),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

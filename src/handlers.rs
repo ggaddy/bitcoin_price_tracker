@@ -69,13 +69,16 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
                 )
                 .await
                 {
-                    refresh_error = Some(error);
+                    warn!(error = ?error, "price refresh failed");
+                    refresh_error = Some(error.to_string());
                 } else {
                     refresh_succeeded = true;
                 }
             }
             Err(error) => {
-                refresh_error = Some(format!("Failed to inspect SQLite before refresh: {error}"));
+                warn!(error = %error, "failed to inspect SQLite before refresh");
+                refresh_error =
+                    Some("Failed to inspect stored price data before refresh".to_string());
             }
         }
     }

@@ -4,11 +4,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use reqwest::Client;
 use thirtyfour::prelude::*;
 
 use crate::{
     app::router,
+    config::upstream_client_builder,
     models::{SnapshotRecord, SourcePrice},
     state::AppState,
     storage::{init_db, store_snapshot},
@@ -74,7 +74,7 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
     .await
     .expect("seed sqlite snapshot for selenium test");
 
-    let client = Client::builder()
+    let client = upstream_client_builder()
         .user_agent("bitcoin-price-tracker/selenium-test")
         .build()
         .expect("build http client for selenium test");
