@@ -112,7 +112,7 @@
         surface.append(node("h3", "label", name), node("p", "value", source ? priceText(source.price_usd) : "No quote"));
         surface.append(node("p", "source-unit", source ? `USD / BTC · ${String(source.quote_kind ?? "unknown").replace(/_/g, " ")}` : "Waiting for a successful quote"));
         surface.append(node("p", "source-detail", source
-          ? `${source.currentFreshness.toUpperCase()} · ${source.age === null ? "Age unknown" : `${source.age}s old`}` : "Age unknown"));
+          ? (source.age === null ? "Age unknown" : `${source.age}s`) : "Age unknown"));
         if (health?.outcome === "failure") surface.append(node("p", "source-error", `Latest attempt failed: ${health.error?.message ?? "Provider request failed"}`));
         else if (health?.outcome !== "success") surface.append(node("p", "source-detail", "Latest attempt unknown"));
         article.append(surface);

@@ -85,7 +85,7 @@ eight-second deadline, including response bodies. Hidden pages cancel requests,
 stop timers, and send inactive presence; returning resumes one set of loops.
 Failures retry automatically and retain received quotes with an age warning.
 
-Source cards show quote kind, age, freshness, and the latest provider error,
+Source cards show quote kind, elapsed seconds, and the latest provider error,
 including providers without quotes. Coverage and indicative aggregates update
 as quotes expire between responses; unknown/future quotes never become fresh
 locally. Last price update uses source observation times. Status transitions
@@ -94,18 +94,78 @@ respects reduced-motion preferences.
 
 ## Local
 
+Install Rust with rustup, then run:
+
 ```bash
-cargo run
+cargo run --locked
+```
+
+`rust-toolchain.toml` pins Rust 1.85.1 with rustfmt and Clippy; `Cargo.toml`
+declares the same minimum version. Tokio's runtime, I/O, signal, synchronization,
+and timer features are explicit. Development checks use locked dependencies:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 Open `http://localhost:3000` in a visible tab.
 
 ## Container
 
+The final image runs as UID/GID **10001:10001** and includes no Rust build tools.
+A named volume is initialized with a writable data directory:
+
 ```bash
 docker build -t btc-matrix .
-docker run --rm -p 3000:3000 -v "$(pwd)/data:/app/data" btc-matrix
+docker volume create btc-data
+docker run -d --name btc-tracker -p 3000:3000 -v btc-data:/app/data btc-matrix
+docker exec btc-tracker bitcoin_price_tracker --healthcheck
+docker stop --time 35 btc-tracker
 ```
+
+For an existing bind mount, stop the previous instance and back up its database
+before migration. The container user must own the directory and database, because
+SQLite also creates journal files there. Prepare permissions within the engine's
+user namespace (this also works with rootless Podman):
+
+```bash
+mkdir -p data
+docker run --rm --user 0:0 -v "$PWD/data:/app/data" btc-matrix chown -R 10001:10001 /app/data
+docker run -d --name btc-tracker -p 3000:3000 -v "$PWD/data:/app/data" btc-matrix
+```
+
+For Podman, build with `podman build --format docker -t btc-matrix .` to preserve
+HEALTHCHECK metadata; then use `podman` in place of `docker` in run commands.
+On SELinux hosts, use an appropriate
+volume label such as `:Z`. Do not run multiple instances against the same SQLite
+file: viewer presence, rate limits, refresh ownership, and retry scheduling are
+process-local. Use a single application instance behind your reverse proxy.
+
+SIGINT/SIGTERM stops accepting new work and drains active requests for up to
+`SHUTDOWN_SECONDS`, followed by up to five seconds for blocking SQLite cleanup.
+A drain timeout exits unsuccessfully and is logged. Configure your orchestrator's
+termination grace longer than this total; 35 seconds covers the defaults.
+
+`GET /health` reports only local database readability, with 200 `{"status":"ok"}`
+or 503 `{"status":"unavailable"}`. It works with an empty initialized database,
+never activates viewers or fetches upstream prices, and does not create a missing
+database. The image's health probe calls this endpoint using the application
+binary, with no curl or shell dependency.
+
+### Runtime verification
+
+```bash
+python3 scripts/verify_runtime.py --engine docker --image btc-matrix
+```
+
+This creates unique disposable containers and a named volume, verifies non-root
+startup, custom bind configuration, empty-data health, seeded quote serving,
+pause/resume, restart persistence, unhealthy storage, probe recovery, and graceful
+shutdown, and removes only its own resources. A pinned Python helper image drives
+HTTP/SQLite checks. The application has no external network during these checks;
+no public provider access is possible.
 
 ### Container CI and releases
 
@@ -128,10 +188,76 @@ This builds and pushes `agaddy/bitcoin_price_tracker:2.3.1` and
 including releases from older branches. Branch pushes and prerelease tags do
 not publish images. The workflow must be present in the tagged commit.
 
-## Config
+## Configuration and limits
 
-- Default DB: `data/bitcoin_prices.db`
-- Override DB: `DATABASE_PATH=/custom/path/bitcoin_prices.db`
+| Environment variable | Default | Accepted values |
+| --- | --- | --- |
+| `DATABASE_PATH` | `data/bitcoin_prices.db` locally; `/app/data/bitcoin_prices.db` in the image | Writable SQLite path |
+| `BIND_ADDRESS` | `0.0.0.0:3000` | IP address and port 1–65535; IPv6 example `[::1]:3000` |
+| `MAX_VIEWERS` | `1000` | 1–100000 |
+| `REQUESTS_PER_SECOND` | `100` | 1–10000 per request group |
+| `REQUEST_CONCURRENCY` | `64` | 1–1024 per request group |
+| `SHUTDOWN_SECONDS` | `25` | 1–120 |
+| `RUST_LOG` | `bitcoin_price_tracker=info` locally; `info` in image | tracing filter |
+
+Invalid numeric/bind settings cause startup to fail with the setting's name.
+Expired viewers are pruned before admission. At viewer capacity, existing
+heartbeats and removals still work; new viewers receive 429 with a safe error and
+`Retry-After: 15`.
+
+Price, presence, and asset requests have independent token buckets and concurrency
+limits, so flooding presence does not consume cached-price capacity. Each bucket
+can burst up to one second's allowance. Health has reserved capacity (10 requests
+per second, four concurrent). Rate exhaustion returns 429; concurrency exhaustion
+returns 503, both with `Retry-After: 1`. Requests have a 20-second application
+deadline, and presence JSON is limited to 1024 bytes. No limiter stores client/IP
+keys or trusts forwarded IP headers. Configure TLS, connection/header limits, and
+any per-client policy at your reverse proxy; tune these application-wide budgets
+to the expected audience. Ordinary dashboard retries already handle 429/503.
+
+Info logs report provider outcome/duration and startup/shutdown. Debug logs add
+refresh decisions, coverage, and overload decisions. Raw viewer IDs are not logged;
+database/transport diagnostic details remain server-side.
+
+### API examples
+
+```bash
+curl http://localhost:3000/health
+curl http://localhost:3000/api/price
+curl -X POST http://localhost:3000/api/presence -H 'Content-Type: application/json' \
+  -d '{"session_id":"example-tab","active":true}'
+```
+
+An empty database is healthy but returns HTTP 503/UNAVAILABLE for prices until a
+viewer activates a successful refresh. Source timestamps remain unchanged on
+provider failure, and expired quotes remain visible with nullable aggregates;
+see [the source contract](docs/source-contract.md).
+
+### Troubleshooting
+
+- Startup SQLite permission errors: check ownership of both the mounted directory
+  and existing database as UID/GID 10001:10001. Stop the old process before changing
+  ownership or restoring a backup.
+- Unhealthy container: inspect application logs and run `bitcoin_price_tracker
+  --healthcheck` inside it; check database readability and the configured bind port.
+- 429 or busy 503 responses: review request/viewer budgets and proxy traffic;
+  capacity limits do not change the upstream refresh cooldown.
+- No upstream updates: a visible dashboard must send presence. Check provider
+  health/error fields and client connectivity before treating this as a database
+  failure. STALE prices can coexist with a healthy local database.
+- Unsupported schema version: use a compatible application version; startup does
+  not silently rewrite a newer database. Keep backups when upgrading.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs Rust formatting, Clippy, locked tests, deterministic
+Chromium tests, a final-image build/runtime smoke check, and Rust/npm advisory
+scans on pull requests and master pushes. It also runs weekly and supports manual
+dispatch. Actions are pinned to commit SHAs with read-only repository permissions.
+Release container publishing remains in `container.yml`.
+
+See [SECURITY.md](SECURITY.md) for scanner versions and the required process for
+any advisory exception. There are no accepted advisories.
 
 ## Browser tests
 
@@ -155,8 +281,23 @@ asset server, use `BTC_APP_URL=http://127.0.0.1:3000 npm test --prefix tests/bro
 API requests remain mocked. Optional `BTC_SCREENSHOT_DIR=/existing/directory`
 writes desktop and narrow-layout screenshots.
 
-The separate Rust Selenium smoke test uses local providers and a manual clock.
-It requires a WebDriver server and remains ignored by default. Its existing
-runner is `scripts/run_selenium_smoke_test.sh`; useful overrides include
-`CONTAINER_ENGINE`, `WEBDRIVER_URL`, `SELENIUM_APP_HOST`, and `SELENIUM_WAIT_SECONDS`.
-Runner portability and cleanup improvements remain P5.6 work.
+The separate Rust Selenium smoke test uses local providers and a manual clock:
+
+```bash
+scripts/run_selenium_smoke_test.sh
+```
+
+The runner needs Docker or Podman and Python 3, but no host Cargo. It starts
+`selenium/standalone-chrome:4.48.0-20260905`, waits for readiness on an ephemeral
+loopback port, and runs the test in the pinned Rust container sharing Selenium's
+network namespace. This keeps app and WebDriver traffic on loopback without host
+networking or host-name assumptions. The engine must support
+`--network container:<id>` and bind mounts (Linux engines, including those in WSL).
+The workspace is mounted for Cargo build artifacts; no test database is retained.
+
+Overrides: `CONTAINER_ENGINE`, `SELENIUM_IMAGE`, `SELENIUM_CONTAINER_NAME`,
+`SELENIUM_WAIT_SECONDS` (1–300), and `RUST_TEST_IMAGE`. The default container name
+is unique. A supplied conflicting name is rejected; existing containers are never
+removed. Cleanup uses only IDs created by the runner, including failure paths.
+For a manually managed WebDriver with host Cargo, set `WEBDRIVER_URL` and
+`SELENIUM_APP_HOST` and run `cargo test --locked selenium_dashboard_smoke_test -- --ignored`.

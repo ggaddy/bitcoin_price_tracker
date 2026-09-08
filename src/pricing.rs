@@ -276,8 +276,15 @@ async fn fetch_selected_sources(
 ) -> Vec<(ProviderHealth, Result<StoredQuote, ProviderError>)> {
     let fetch = |source| async move {
         if sources.contains(&source) {
+            let started = std::time::Instant::now();
             let attempted_at_unix = state.clock.now_unix();
             let result = fetch_round_robin_source(&state.client, &state.endpoints, source).await;
+            tracing::info!(
+                provider = source.name(),
+                duration_ms = started.elapsed().as_millis() as u64,
+                success = result.is_ok(),
+                "provider request completed"
+            );
             let last_attempt = match &result {
                 Ok(_) => LastAttempt::Success { attempted_at_unix },
                 Err(error) => LastAttempt::Failure {

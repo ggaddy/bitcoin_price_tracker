@@ -288,7 +288,8 @@ fn load_price_state_sync_with_hook(
     db_path: &Path,
     after_metadata: impl FnOnce(),
 ) -> Result<StoredPriceState, String> {
-    let mut conn = open_connection(db_path)?;
+    let mut conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("failed to open SQLite for reading: {error}"))?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(|error| format!("failed to start SQLite read transaction: {error}"))?;

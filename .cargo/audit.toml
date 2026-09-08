@@ -1,0 +1,4 @@
+[advisories]
+# No accepted advisories. Any future exception needs a documented rationale,
+# owner, expiry/review date, and a removal issue in SECURITY.md.
+ignore = []

@@ -34,11 +34,21 @@ pub(crate) async fn update_presence(
         return (
             StatusCode::BAD_REQUEST,
             Json(PresenceResponse { active_viewers: 0 }),
-        );
+        )
+            .into_response();
     }
 
-    let active_viewers = apply_presence_update(&state, payload).await;
-    (StatusCode::OK, Json(PresenceResponse { active_viewers }))
+    match apply_presence_update(&state, payload).await {
+        Ok(active_viewers) => {
+            (StatusCode::OK, Json(PresenceResponse { active_viewers })).into_response()
+        }
+        Err(active_viewers) => {
+            tracing::debug!(active_viewers, "viewer capacity reached");
+            (StatusCode::TOO_MANY_REQUESTS, [("retry-after", "15")], Json(serde_json::json!({
+                "active_viewers": active_viewers, "error": "Viewer capacity reached; retry later."
+            }))).into_response()
+        }
+    }
 }
 
 pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoResponse {
@@ -164,6 +174,9 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
     } else {
         StatusCode::OK
     };
+    tracing::debug!(http_status = status.as_u16(), refresh_succeeded,
+        skip_reason = ?refresh_skipped_reason, price_status = ?evaluated.status,
+        fresh_sources = evaluated.coverage.fresh_source_count, active_viewers, "price response");
     (
         status,
         Json(PriceResponse {
@@ -186,4 +199,17 @@ pub(crate) async fn btc_prices(State(state): State<AppState>) -> impl IntoRespon
             refresh_skipped_reason,
         }),
     )
+}
+
+pub(crate) async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    match load_price_state(state.db_path.clone()).await {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))),
+        Err(error) => {
+            warn!(error = %error, "health database read failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"status": "unavailable"})),
+            )
+        }
+    }
 }

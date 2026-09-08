@@ -136,8 +136,7 @@ test('freshness expires between responses without upgrading unknown or future qu
   await text(page, 'status', 'STALE');
   await text(page, 'coverage', '0 of 4');
   await text(page, 'avg', 'Unavailable');
-  await text(page, 'sources', '90s old');
-  await text(page, 'sources', 'FUTURE');
+  assert.deepEqual(await page.locator('#sources .source-detail').allTextContents(), ['90s', '90s', 'Age unknown', 'Age unknown']);
 });
 
 test('LIVE expires locally as coverage drops', async t => {

@@ -8,12 +8,21 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePayload) -> usize {
+pub(crate) async fn apply_presence_update(
+    state: &AppState,
+    payload: PresencePayload,
+) -> Result<usize, usize> {
     let mut viewers = state.viewers.lock().await;
     let now = state.clock.now_monotonic();
     prune_inactive_viewers(&mut viewers, now);
     let previously_empty = viewers.is_empty();
 
+    if payload.active
+        && !viewers.contains_key(&payload.session_id)
+        && viewers.len() >= state.config.max_viewers
+    {
+        return Err(viewers.len());
+    }
     if payload.active {
         viewers.insert(payload.session_id, now);
     } else {
@@ -24,7 +33,7 @@ pub(crate) async fn apply_presence_update(state: &AppState, payload: PresencePay
         state.full_refresh_generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    viewers.len()
+    Ok(viewers.len())
 }
 
 pub(crate) async fn active_viewer_count(state: &AppState) -> usize {
@@ -133,7 +142,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(count, 1);
+        assert_eq!(count, Ok(1));
         assert_eq!(state.full_refresh_generation.load(Ordering::SeqCst), 1);
     }
 }

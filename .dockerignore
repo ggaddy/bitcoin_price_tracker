@@ -2,6 +2,13 @@ target
 .git
 .gitignore
 README.md
+AUDIT.md
+docs
+tests
+scripts
+.github
 project_plan
-
-tests/browser/node_modules
+data
+*.db
+*.db-shm
+*.db-wal

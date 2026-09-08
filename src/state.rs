@@ -8,13 +8,16 @@ use std::{
 use tokio::sync::Mutex;
 
 use crate::{
-    config::UpstreamEndpoints,
+    config::{RuntimeConfig, UpstreamEndpoints},
+    limits::RequestLimits,
     refresh::RefreshCoordinator,
     util::{Clock, SystemClock},
 };
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) config: RuntimeConfig,
+    pub(crate) limits: Arc<RequestLimits>,
     pub(crate) client: Client,
     pub(crate) db_path: PathBuf,
     pub(crate) endpoints: Arc<UpstreamEndpoints>,
@@ -36,13 +39,22 @@ impl AppState {
         )
     }
 
+    pub(crate) fn with_config(mut self, config: RuntimeConfig) -> Self {
+        self.limits = Arc::new(RequestLimits::new(&config, self.clock.now_monotonic()));
+        self.config = config;
+        self
+    }
+
     pub(crate) fn with_dependencies(
         client: Client,
         db_path: PathBuf,
         endpoints: UpstreamEndpoints,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        let config = RuntimeConfig::default();
         Self {
+            limits: Arc::new(RequestLimits::new(&config, clock.now_monotonic())),
+            config,
             client,
             db_path,
             endpoints: Arc::new(endpoints),

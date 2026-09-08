@@ -2,78 +2,57 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-SELENIUM_CONTAINER_NAME="${SELENIUM_CONTAINER_NAME:-btc-selenium}"
-SELENIUM_IMAGE="${SELENIUM_IMAGE:-docker.io/selenium/standalone-chrome:latest}"
-WEBDRIVER_URL="${WEBDRIVER_URL:-http://127.0.0.1:4444}"
-SELENIUM_APP_HOST="${SELENIUM_APP_HOST:-127.0.0.1}"
+SELENIUM_CONTAINER_NAME="${SELENIUM_CONTAINER_NAME:-btc-selenium-$$-$RANDOM}"
+SELENIUM_IMAGE="${SELENIUM_IMAGE:-docker.io/selenium/standalone-chrome:4.48.0-20260905}"
+RUST_TEST_IMAGE="${RUST_TEST_IMAGE:-docker.io/library/rust:1.85.1-bookworm}"
 SELENIUM_WAIT_SECONDS="${SELENIUM_WAIT_SECONDS:-60}"
-
-if [[ -n "${CONTAINER_ENGINE:-}" ]]; then
-  ENGINE="$CONTAINER_ENGINE"
-elif command -v podman >/dev/null 2>&1; then
-  ENGINE="podman"
-elif command -v docker >/dev/null 2>&1; then
-  ENGINE="docker"
-else
-  echo "No supported container engine found. Set CONTAINER_ENGINE or install podman/docker." >&2
-  exit 1
+ENGINE="${CONTAINER_ENGINE:-}"
+if [[ -z "$ENGINE" ]]; then
+  if command -v podman >/dev/null 2>&1; then ENGINE=podman
+  elif command -v docker >/dev/null 2>&1; then ENGINE=docker
+  else echo 'Install Docker or Podman, or set CONTAINER_ENGINE.' >&2; exit 1; fi
 fi
-
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo is required to run the Selenium smoke test." >&2
-  exit 1
-fi
-
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required to wait for WebDriver readiness." >&2
-  exit 1
-fi
-
-STARTED_CONTAINER=0
+command -v python3 >/dev/null || { echo 'python3 is required.' >&2; exit 1; }
+# Names are never used for cleanup: only IDs returned by our own creation calls.
+SELENIUM_ID=""
+RUST_ID=""
 cleanup() {
-  if [[ "$STARTED_CONTAINER" == "1" ]]; then
-    "$ENGINE" rm -f "$SELENIUM_CONTAINER_NAME" >/dev/null 2>&1 || true
-  fi
+  if [[ -n "$RUST_ID" ]]; then "$ENGINE" rm -f "$RUST_ID" >/dev/null 2>&1 || true; fi
+  if [[ -n "$SELENIUM_ID" ]]; then "$ENGINE" rm -f "$SELENIUM_ID" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
-
-if "$ENGINE" ps -a --format '{{.Names}}' | grep -Fxq "$SELENIUM_CONTAINER_NAME"; then
-  echo "Removing existing container: $SELENIUM_CONTAINER_NAME"
-  "$ENGINE" rm -f "$SELENIUM_CONTAINER_NAME" >/dev/null
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if "$ENGINE" container inspect "$SELENIUM_CONTAINER_NAME" >/dev/null 2>&1; then
+  echo "Container name already exists: $SELENIUM_CONTAINER_NAME. Choose another name; nothing was removed." >&2
+  exit 1
 fi
-
-echo "Starting Selenium container with $ENGINE: $SELENIUM_IMAGE"
-"$ENGINE" run --rm -d --name "$SELENIUM_CONTAINER_NAME" --network host "$SELENIUM_IMAGE" >/dev/null
-STARTED_CONTAINER=1
-
-export WEBDRIVER_URL
-export SELENIUM_APP_HOST
+SELENIUM_ID="$("$ENGINE" create --name "$SELENIUM_CONTAINER_NAME" --shm-size=2g -p 127.0.0.1::4444 "$SELENIUM_IMAGE")"
+"$ENGINE" start "$SELENIUM_ID" >/dev/null
+SELENIUM_PORT="$("$ENGINE" port "$SELENIUM_ID" 4444/tcp)"
+export WEBDRIVER_URL="http://$SELENIUM_PORT"
 export SELENIUM_WAIT_SECONDS
-
 python3 - <<'PY'
-import json
-import os
-import time
-import urllib.request
-
-url = os.environ["WEBDRIVER_URL"].rstrip("/") + "/status"
-timeout = int(os.environ["SELENIUM_WAIT_SECONDS"])
-last_error = None
-for _ in range(timeout):
+import json, os, time, urllib.request
+seconds = int(os.environ['SELENIUM_WAIT_SECONDS'])
+if not 1 <= seconds <= 300: raise SystemExit('SELENIUM_WAIT_SECONDS must be between 1 and 300')
+deadline = time.monotonic() + seconds
+while time.monotonic() < deadline:
     try:
-        with urllib.request.urlopen(url, timeout=2) as response:
-            data = json.load(response)
-        if data.get("value", {}).get("ready") is True:
-            print(f"WebDriver ready at {url}")
-            raise SystemExit(0)
-        last_error = data
-    except Exception as exc:
-        last_error = str(exc)
-    time.sleep(1)
-print(f"WebDriver did not become ready within {timeout}s: {last_error}")
-raise SystemExit(1)
+        with urllib.request.urlopen(os.environ['WEBDRIVER_URL'] + '/status', timeout=2) as response:
+            if json.load(response).get('value', {}).get('ready'):
+                break
+    except Exception:
+        pass
+    time.sleep(.5)
+else: raise SystemExit('WebDriver did not become ready before the deadline')
 PY
-
-cd "$ROOT_DIR"
-echo "Running Selenium smoke test"
-cargo test selenium_dashboard_smoke_test -- --ignored "$@"
+# Share Selenium's network namespace, so both the fixture app and WebDriver use
+# loopback on Docker/Podman, without host networking or a host Rust installation.
+RUST_ID="$("$ENGINE" create --network "container:$SELENIUM_ID" \
+  -v "$ROOT_DIR:/app" -w /app \
+  -e WEBDRIVER_URL=http://127.0.0.1:4444 -e SELENIUM_APP_HOST=127.0.0.1 \
+  "$RUST_TEST_IMAGE" cargo test --locked --release selenium_dashboard_smoke_test -- --ignored "$@")"
+"$ENGINE" start --attach "$RUST_ID"
+EXIT_CODE="$("$ENGINE" inspect --format '{{.State.ExitCode}}' "$RUST_ID")"
+exit "$EXIT_CODE"

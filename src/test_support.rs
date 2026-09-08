@@ -268,6 +268,11 @@ impl TestApp {
         }
     }
 
+    pub(crate) fn configure(&mut self, config: crate::config::RuntimeConfig) {
+        self.state = self.state.clone().with_config(config);
+        self.router = router(self.state.clone());
+    }
+
     pub(crate) async fn presence(&self, active: bool) {
         self.presence_for("test-viewer", active).await;
     }
@@ -299,7 +304,7 @@ impl TestApp {
         self.request(Method::GET, "/api/price", None).await
     }
 
-    async fn request(
+    pub(crate) async fn request(
         &self,
         method: Method,
         path: &str,

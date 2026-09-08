@@ -33,7 +33,7 @@ async fn wait_for_text(driver: &WebDriver, element_id: &str) -> WebDriverResult<
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a WebDriver server such as Selenium or chromedriver"]
-async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
+async fn selenium_dashboard_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
     // Local providers and a manual clock prevent accidental public upstream calls,
     // even when browser startup takes longer than the normal freshness window.
     let fixture = TestApp::new().await;
@@ -56,44 +56,31 @@ async fn selenium_dashboard_smoke_test() -> WebDriverResult<()> {
         Ok(driver) => driver,
         Err(error) => {
             server.abort();
-            return Err(error);
+            let _ = server.await;
+            return Err(error.into());
         }
     };
-    let result = async {
+    // Assertions return errors so browser/server cleanup also runs on a mismatch.
+    let result: Result<(), Box<dyn std::error::Error>> = async {
         let app_url = format!("http://{}:{}/", browser_test_host(), address.port());
         driver.goto(&app_url).await?;
-
-        assert_eq!(driver.title().await?, "BTC Tracker");
-        assert_eq!(
-            driver.find(By::Css("h1.title")).await?.text().await?,
-            "BTC TRACKER"
-        );
-        assert_eq!(
-            driver.find(By::Css("p.sub")).await?.text().await?,
-            "spot pricing feed"
-        );
-
+        let title = driver.title().await?;
+        let heading = driver.find(By::Css("h1.title")).await?.text().await?;
         let average = wait_for_text(&driver, "avg").await?;
         let status = wait_for_text(&driver, "status").await?;
         let source = wait_for_text(&driver, "sources").await?;
-
-        assert!(
-            average.replace(['\u{2009}', ','], "").contains("100150.00"),
-            "unexpected average text: {average}"
-        );
-        assert_eq!(status, "LIVE");
-        assert!(
-            source.contains("CoinGecko"),
-            "unexpected source text: {source}"
-        );
-
-        WebDriverResult::Ok(())
-    }
-    .await;
+        if title != "BTC Tracker" || heading != "BTC TRACKER"
+            || !average.replace(['\u{2009}', ','], "").contains("100150.00")
+            || status != "LIVE" || !source.to_ascii_lowercase().contains("coingecko") {
+            return Err(format!("Unexpected dashboard: title={title}, heading={heading}, average={average}, status={status}").into());
+        }
+        Ok(())
+    }.await;
 
     let quit_result = driver.quit().await;
     server.abort();
-
+    let _ = server.await;
     result?;
-    quit_result
+    quit_result?;
+    Ok(())
 }

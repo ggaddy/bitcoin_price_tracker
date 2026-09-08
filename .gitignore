@@ -3,3 +3,4 @@ project_plan
 data/
 
 /tests/browser/node_modules/
+__pycache__/
