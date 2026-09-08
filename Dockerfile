@@ -1,18 +1,12 @@
-FROM docker.io/library/rust:1.85.1-bookworm AS builder
+FROM docker.io/library/rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
-RUN cargo build --locked --release
+RUN cargo build --locked --release && mkdir /app/runtime-data
 
-FROM docker.io/library/debian:bookworm-slim
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:c31ff9abcb1910f3ab25c7957bdaf0bfe12a01eb546e8df2282f1c8f682b606c
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 tracker \
-    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin tracker \
-    && mkdir -p /app/data \
-    && chown 10001:10001 /app/data
+COPY --from=builder --chown=10001:10001 /app/runtime-data /app/data
 COPY --from=builder /app/target/release/bitcoin_price_tracker /usr/local/bin/bitcoin_price_tracker
 USER 10001:10001
 EXPOSE 3000

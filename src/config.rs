@@ -7,10 +7,21 @@ pub(crate) const SOURCE_MAX_AGE_SECONDS: u64 = 90;
 pub(crate) const VIEWER_TTL_SECONDS: i64 = 15;
 pub(crate) const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const UPSTREAM_BODY_LIMIT: usize = 64 * 1024;
 
 pub(crate) fn upstream_client_builder() -> ClientBuilder {
+    bounded_client_builder().https_only(true)
+}
+
+pub(crate) fn health_client_builder() -> ClientBuilder {
+    // The health probe only connects to the configured local listener.
+    bounded_client_builder().no_proxy()
+}
+
+fn bounded_client_builder() -> ClientBuilder {
     Client::builder()
         .user_agent("bitcoin-price-tracker/0.1")
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
         .timeout(UPSTREAM_REQUEST_TIMEOUT)
 }
@@ -47,6 +58,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) max_viewers: usize,
     pub(crate) requests_per_second: usize,
     pub(crate) concurrency: usize,
+    pub(crate) max_connections: usize,
     pub(crate) shutdown_seconds: u64,
 }
 
@@ -57,6 +69,7 @@ impl Default for RuntimeConfig {
             max_viewers: 1000,
             requests_per_second: 100,
             concurrency: 64,
+            max_connections: 128,
             shutdown_seconds: 25,
         }
     }
@@ -103,6 +116,7 @@ impl RuntimeConfig {
                 10_000,
             )?,
             concurrency: positive(&get, "REQUEST_CONCURRENCY", defaults.concurrency, 1024)?,
+            max_connections: positive(&get, "MAX_CONNECTIONS", defaults.max_connections, 4096)?,
             shutdown_seconds: positive(
                 &get,
                 "SHUTDOWN_SECONDS",
@@ -125,6 +139,7 @@ mod runtime_tests {
             "MAX_VIEWERS",
             "REQUESTS_PER_SECOND",
             "REQUEST_CONCURRENCY",
+            "MAX_CONNECTIONS",
             "SHUTDOWN_SECONDS",
         ] {
             for value in ["0", "-1", "bad", "999999999999999999999999"] {

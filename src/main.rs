@@ -15,7 +15,7 @@ mod ui;
 mod util;
 
 use app::router;
-use config::{RuntimeConfig, database_path, upstream_client_builder};
+use config::{RuntimeConfig, database_path, health_client_builder, upstream_client_builder};
 use state::AppState;
 use std::{process::ExitCode, time::Duration};
 use storage::init_db;
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
             if address.ip().is_unspecified() {
                 address.set_ip(if address.is_ipv4() { std::net::Ipv4Addr::LOCALHOST.into() } else { std::net::Ipv6Addr::LOCALHOST.into() });
             }
-            let response = upstream_client_builder().no_proxy().build().map_err(|error| error.to_string())?
+            let response = health_client_builder().build().map_err(|error| error.to_string())?
                 .get(format!("http://{address}/health")).send().await.map_err(|error| error.to_string())?;
             return if response.status().is_success() { Ok(()) } else { Err("health endpoint is unavailable".into()) };
         }
@@ -54,8 +54,12 @@ fn main() -> ExitCode {
             .map_err(|error| format!("failed to bind {}: {error}", config.bind_address))?;
         tracing::info!(address = %config.bind_address, max_viewers = config.max_viewers, "server listening");
         let grace = Duration::from_secs(config.shutdown_seconds);
+        let connection_limits = lifecycle::ConnectionLimits {
+            max_connections: config.max_connections,
+            ..Default::default()
+        };
         let state = AppState::new(client, db_path).with_config(config);
-        lifecycle::serve_until(listener, router(state), lifecycle::shutdown_signal(), grace).await
+        lifecycle::serve_until(listener, router(state), lifecycle::shutdown_signal(), grace, connection_limits).await
     });
     // Bound cleanup of any blocking SQLite jobs after the HTTP drain deadline.
     runtime.shutdown_timeout(Duration::from_secs(5));

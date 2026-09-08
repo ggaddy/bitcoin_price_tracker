@@ -40,7 +40,7 @@ pub(crate) enum ProviderErrorKind {
     },
     InvalidPayload {
         reason: &'static str,
-        cause: Option<reqwest::Error>,
+        cause: Option<serde_json::Error>,
     },
     InvalidPrice {
         field: &'static str,
@@ -73,31 +73,23 @@ impl ProviderError {
         }
     }
     pub(crate) fn from_reqwest(provider: UpstreamSource, error: reqwest::Error) -> Self {
-        // Body reads can time out too; classify these before JSON decode failures.
+        // JSON parsing happens separately, after the bounded body transfer.
         let kind = if error.is_timeout() {
             ProviderErrorKind::Timeout(error)
-        } else if Self::has_json_cause(&error) {
-            ProviderErrorKind::InvalidPayload {
-                reason: "invalid JSON",
-                cause: Some(error),
-            }
         } else {
             ProviderErrorKind::Transport(error)
         };
         Self { provider, kind }
     }
 
-    fn has_json_cause(error: &reqwest::Error) -> bool {
-        // Reqwest also wraps failed body transfers as Decode errors; only a JSON
-        // parser cause means that the provider sent an invalid JSON payload.
-        let mut cause = error.source();
-        while let Some(current) = cause {
-            if current.is::<serde_json::Error>() {
-                return true;
-            }
-            cause = current.source();
+    pub(crate) fn invalid_json(provider: UpstreamSource, cause: serde_json::Error) -> Self {
+        Self {
+            provider,
+            kind: ProviderErrorKind::InvalidPayload {
+                reason: "invalid JSON",
+                cause: Some(cause),
+            },
         }
-        false
     }
 
     pub(crate) fn invalid_payload(provider: UpstreamSource, reason: &'static str) -> Self {

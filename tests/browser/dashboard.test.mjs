@@ -29,11 +29,14 @@ before(async () => {
   const files = new Map(await Promise.all([
     ['/', '../../src/ui.html', 'text/html'],
     ['/assets/dashboard.js', '../../src/dashboard.js', 'text/javascript'],
+    ['/assets/dashboard.css', '../../src/dashboard.css', 'text/css'],
     ['/assets/cybercore-0.3.0.min.css', '../../src/vendor/cybercore-0.3.0.min.css', 'text/css'],
   ].map(async ([path, file, type]) => [path, { body: await readFile(new URL(file, import.meta.url)), type }])));
+  const ui = await readFile(new URL('../../src/ui.rs', import.meta.url), 'utf8');
+  const policy = ui.match(/"(default-src [^"]+)"/)[1];
   server = createServer((req, res) => {
     const file = files.get(req.url);
-    res.writeHead(file ? 200 : 404, { 'Content-Type': file?.type ?? 'text/plain' });
+    res.writeHead(file ? 200 : 404, { 'Content-Type': file?.type ?? 'text/plain', 'Content-Security-Policy': policy });
     res.end(file?.body ?? 'Not found');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -66,6 +69,8 @@ async function setup(t, options = {}) {
     Object.defineProperty(document, 'visibilityState', { get: () => window.testHidden ? 'hidden' : 'visible' });
     window.changeVisibility = hidden => { window.testHidden = hidden; document.dispatchEvent(new Event('visibilitychange')); };
     window.unhandled = [];
+    window.cspViolations = [];
+    window.addEventListener('securitypolicyviolation', event => window.cspViolations.push(event.violatedDirective));
     window.addEventListener('unhandledrejection', event => window.unhandled.push(String(event.reason)));
   });
   if (options.init) await context.addInitScript(options.init);
@@ -90,6 +95,7 @@ async function setup(t, options = {}) {
     try {
       assert.deepEqual(errors, []);
       for (const tab of context.pages()) assert.deepEqual(await tab.evaluate(() => window.unhandled ?? []), []);
+      for (const tab of context.pages()) assert.deepEqual(await tab.evaluate(() => window.cspViolations ?? []), []);
     } finally { await context.close(); }
   });
   await page.goto(base);
