@@ -7,6 +7,8 @@ rust-version = "1.85.1"
 [dependencies]
 axum = "0.8.1"
 httpdate = "1.0.3"
+hyper = { version = "1.8.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
 reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.34.0", features = ["bundled"] }
 serde = { version = "1.0.217", features = ["derive"] }

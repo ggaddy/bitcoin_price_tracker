@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tokio::join;
 
 use crate::{
-    config::UpstreamEndpoints,
+    config::{UPSTREAM_BODY_LIMIT, UpstreamEndpoints},
     errors::{ProviderError, ProviderErrorKind, RefreshError, RetryAfter},
     models::source_contract::{LastAttempt, ProviderHealth, QuoteKind, StoredQuote},
     models::{SnapshotRecord, SourcePrice},
@@ -58,7 +58,7 @@ async fn fetch_json(
 
 async fn decode_response(
     provider: UpstreamSource,
-    response: Response,
+    mut response: Response,
 ) -> Result<Value, ProviderError> {
     let status = response.status();
     if !status.is_success() {
@@ -73,10 +73,27 @@ async fn decode_response(
             },
         });
     }
-    response
-        .json()
+    let oversized = || ProviderError::invalid_payload(provider, "response body too large");
+    if response
+        .content_length()
+        .is_some_and(|size| size > UPSTREAM_BODY_LIMIT as u64)
+    {
+        return Err(oversized());
+    }
+    // Check actual chunks as well as Content-Length: chunked responses have no
+    // declared length, and a time limit alone does not bound memory consumption.
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| ProviderError::from_reqwest(provider, error))
+        .map_err(|error| ProviderError::from_reqwest(provider, error))?
+    {
+        if chunk.len() > UPSTREAM_BODY_LIMIT - body.len() {
+            return Err(oversized());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|error| ProviderError::invalid_json(provider, error))
 }
 
 fn checked_price(
@@ -555,7 +572,11 @@ mod tests {
 
     #[tokio::test]
     async fn total_deadline_also_covers_the_response_body() {
-        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let client = upstream_client_builder()
+            .https_only(false)
+            .no_proxy()
+            .build()
+            .unwrap();
         let (response, _socket) = partial_http_response(&client).await;
         assert_eq!(response.status(), StatusCode::OK);
         time::pause();
@@ -575,7 +596,11 @@ mod tests {
 
     #[tokio::test]
     async fn truncated_body_is_a_transport_error_with_a_safe_public_message() {
-        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let client = upstream_client_builder()
+            .https_only(false)
+            .no_proxy()
+            .build()
+            .unwrap();
         let (response, socket) = partial_http_response(&client).await;
         drop(socket);
         let error = decode_response(UpstreamSource::CoinGecko, response)
@@ -828,5 +853,201 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use crate::{
+        config::upstream_client_builder,
+        test_support::{FixtureResponse, TestApp},
+    };
+    use axum::http::{HeaderValue, StatusCode, header};
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    fn padded_quote(size: usize) -> String {
+        let mut body = r#"{"bitcoin":{"usd":100000}}"#.to_string();
+        body.extend(std::iter::repeat_n(' ', size - body.len()));
+        body
+    }
+
+    #[tokio::test]
+    async fn provider_client_rejects_cleartext_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = upstream_client_builder().no_proxy().build().unwrap();
+        let error = fetch_json(
+            &client,
+            &format!("http://{}", listener.local_addr().unwrap()),
+            UpstreamSource::CoinGecko,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(error.kind, ProviderErrorKind::Transport(_)));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_redirect_never_contacts_the_destination() {
+        let app = TestApp::new().await;
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        for status in [301, 302, 303, 307, 308] {
+            let mut response = FixtureResponse::json(serde_json::json!({}));
+            response.status = StatusCode::from_u16(status).unwrap();
+            response.headers.insert(
+                header::LOCATION,
+                HeaderValue::from_str(&format!("http://{}/internal", target.local_addr().unwrap()))
+                    .unwrap(),
+            );
+            app.upstreams
+                .provider(UpstreamSource::CoinGecko)
+                .set_response(response);
+            let error = fetch_coingecko(&app.state.client, &app.state.endpoints.coingecko)
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                matches!(error.kind, ProviderErrorKind::Http { status: code, .. } if code.as_u16() == status)
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), target.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_body_limit_accepts_the_boundary_and_rejects_larger_payloads() {
+        let app = TestApp::new().await;
+        for size in [
+            UPSTREAM_BODY_LIMIT - 1,
+            UPSTREAM_BODY_LIMIT,
+            UPSTREAM_BODY_LIMIT + 1,
+        ] {
+            let mut response = FixtureResponse::json(serde_json::json!({}));
+            response.body = padded_quote(size);
+            app.upstreams
+                .provider(UpstreamSource::CoinGecko)
+                .set_response(response);
+            let result = fetch_coingecko(&app.state.client, &app.state.endpoints.coingecko).await;
+            if size <= UPSTREAM_BODY_LIMIT {
+                assert_eq!(result.unwrap().price_usd, 100000.0);
+            } else {
+                assert_eq!(
+                    result.err().unwrap().to_string(),
+                    "CoinGecko response invalid: response body too large"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_provider_bodies_observe_the_same_byte_limit() {
+        let client = upstream_client_builder()
+            .https_only(false)
+            .no_proxy()
+            .build()
+            .unwrap();
+        for size in [UPSTREAM_BODY_LIMIT, UPSTREAM_BODY_LIMIT + 1] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 1024];
+                assert!(stream.read(&mut request).await.unwrap() > 0);
+                stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+                for chunk in padded_quote(size).as_bytes().chunks(4096) {
+                    let header = format!("{:x}\r\n", chunk.len());
+                    if stream.write_all(header.as_bytes()).await.is_err()
+                        || stream.write_all(chunk).await.is_err()
+                        || stream.write_all(b"\r\n").await.is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = stream.write_all(b"0\r\n\r\n").await;
+            });
+            let result = fetch_coingecko(&client, &format!("http://{address}")).await;
+            assert_eq!(result.is_ok(), size <= UPSTREAM_BODY_LIMIT);
+            if let Err(error) = result {
+                assert!(error.to_string().contains("body too large"));
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_declared_body_is_rejected_before_waiting_for_body_bytes() {
+        let client = upstream_client_builder()
+            .https_only(false)
+            .no_proxy()
+            .build()
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (send, wait) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                        UPSTREAM_BODY_LIMIT + 1
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let _ = wait.await;
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch_coingecko(&client, &format!("http://{address}")),
+        )
+        .await
+        .expect("body length rejected without reading the body");
+        assert!(result.err().unwrap().to_string().contains("body too large"));
+        let _ = send.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_provider_payload_preserves_the_stored_quote() {
+        let app = TestApp::new().await;
+        app.presence(true).await;
+        let (_, original) = app.price().await;
+        let mut response = FixtureResponse::json(serde_json::json!({}));
+        response.body = padded_quote(UPSTREAM_BODY_LIMIT + 1);
+        app.upstreams
+            .provider(UpstreamSource::CoinGecko)
+            .set_response(response);
+        app.clock.advance(Duration::from_secs(10));
+        let (status, after) = app.price().await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            after["sources"][0]["price_usd"],
+            original["sources"][0]["price_usd"]
+        );
+        assert_eq!(
+            after["sources"][0]["last_success_at_unix"],
+            original["sources"][0]["last_success_at_unix"]
+        );
+        assert_eq!(after["refresh_succeeded"], false);
+        assert_eq!(
+            after["provider_health"][0]["last_attempt"]["error"]["category"],
+            "invalid_payload"
+        );
     }
 }

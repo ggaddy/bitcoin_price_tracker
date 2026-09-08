@@ -17,6 +17,7 @@ pub(crate) fn router(state: AppState) -> Router {
             get(crate::ui::cybercore_css),
         )
         .route("/assets/dashboard.js", get(crate::ui::dashboard_js))
+        .route("/assets/dashboard.css", get(crate::ui::dashboard_css))
         .route("/api/price", get(btc_prices))
         .route("/api/presence", post(update_presence))
         .layer(axum::extract::DefaultBodyLimit::max(1024))
@@ -24,5 +25,6 @@ pub(crate) fn router(state: AppState) -> Router {
             state.clone(),
             crate::limits::limit_requests,
         ))
+        .layer(axum::middleware::from_fn(crate::ui::security_headers))
         .with_state(state)
 }

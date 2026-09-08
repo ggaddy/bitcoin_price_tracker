@@ -48,7 +48,8 @@ try:
     command('pull', helper)
     command('volume', 'create', volume)
     volume_created = True
-    container = command('create', '--network', 'none', '-v', volume + ':/app/data',
+    container = command('create', '--network', 'none', '--read-only', '--cap-drop=ALL',
+                        '--security-opt=no-new-privileges', '-v', volume + ':/app/data',
                         '-e', 'BIND_ADDRESS=0.0.0.0:3100', '-e', 'SHUTDOWN_SECONDS=5', args.image).stdout.strip()
     command('start', container)
     deadline = time.monotonic() + 20
@@ -62,6 +63,7 @@ try:
     assert config.get('Healthcheck', {}).get('Test'), 'Image lacks HEALTHCHECK metadata; use podman build --format docker'
     user = command('inspect', '--format', '{{.Config.User}}', container).stdout.strip()
     assert user == '10001:10001', user
+    assert command('exec', container, '/bin/sh', '-c', 'true', check=False).returncode != 0, 'Runtime unexpectedly includes a shell'
     probe(http + '''
 assert request('/health') == (200, {'status': 'ok'})
 status, data = request('/api/price')
@@ -123,8 +125,9 @@ print('Graceful shutdown, restart persistence and unhealthy database detection p
         bind_container = None
         try:
             command('run', '--rm', '--network', 'none', '--user', '0:0', '-v', str(data_dir) + ':/app/data',
-                    args.image, 'chown', '10001:10001', '/app/data')
-            bind_container = command('run', '-d', '--network', 'none', '-v', str(data_dir) + ':/app/data', args.image).stdout.strip()
+                    helper, 'chown', '10001:10001', '/app/data')
+            bind_container = command('run', '-d', '--network', 'none', '--read-only', '--cap-drop=ALL',
+                                     '--security-opt=no-new-privileges', '-v', str(data_dir) + ':/app/data', args.image).stdout.strip()
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 if command('exec', bind_container, 'bitcoin_price_tracker', '--healthcheck', check=False).returncode == 0:

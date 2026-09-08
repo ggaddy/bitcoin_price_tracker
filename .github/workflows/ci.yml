@@ -1,5 +1,11 @@
 name: CI
 on:
+  workflow_call:
+    inputs:
+      runtime:
+        description: Build, verify and scan the runtime image
+        type: boolean
+        default: true
   pull_request:
   push:
     branches: [master]
@@ -53,9 +59,40 @@ jobs:
       - run: npm ci --prefix tests/browser
       - run: npm audit --prefix tests/browser --audit-level=low
   runtime:
+    if: inputs.runtime || !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker build --tag btc-ci .
       - run: python3 scripts/verify_runtime.py --engine docker --image btc-ci
+      - run: python3 scripts/check_image_exceptions.py
+      - name: Scan final runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          image: btc-ci
+          grype-version: v0.118.0
+          config: .grype.yaml
+          severity-cutoff: high
+          output-format: table
+  published-image:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 scripts/check_image_exceptions.py
+      - name: Resolve the published image to its digest
+        id: published
+        run: |
+          docker pull agaddy/bitcoin_price_tracker:latest
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' agaddy/bitcoin_price_tracker:latest)
+          echo "image=$digest" >> "$GITHUB_OUTPUT"
+      - name: Scan the published digest
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          image: ${{ steps.published.outputs.image }}
+          grype-version: v0.118.0
+          config: .grype.yaml
+          severity-cutoff: high
+          output-format: table

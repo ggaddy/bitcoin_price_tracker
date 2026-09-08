@@ -114,13 +114,15 @@ Open `http://localhost:3000` in a visible tab.
 
 ## Container
 
-The final image runs as UID/GID **10001:10001** and includes no Rust build tools.
+The final image runs as UID/GID **10001:10001** on digest-pinned distroless Debian
+13, without a shell, package manager, or Rust build tools.
 A named volume is initialized with a writable data directory:
 
 ```bash
 docker build -t btc-matrix .
 docker volume create btc-data
-docker run -d --name btc-tracker -p 3000:3000 -v btc-data:/app/data btc-matrix
+docker run -d --name btc-tracker -p 3000:3000 -v btc-data:/app/data \
+  --read-only --cap-drop ALL --security-opt no-new-privileges btc-matrix
 docker exec btc-tracker bitcoin_price_tracker --healthcheck
 docker stop --time 35 btc-tracker
 ```
@@ -132,8 +134,11 @@ user namespace (this also works with rootless Podman):
 
 ```bash
 mkdir -p data
-docker run --rm --user 0:0 -v "$PWD/data:/app/data" btc-matrix chown -R 10001:10001 /app/data
-docker run -d --name btc-tracker -p 3000:3000 -v "$PWD/data:/app/data" btc-matrix
+docker run --rm --network none --user 0:0 -v "$PWD/data:/app/data" \
+  python:3.12.3-slim-bookworm@sha256:afc139a0a640942491ec481ad8dda10f2c5b753f5c969393b12480155fe15a63 \
+  chown -R 10001:10001 /app/data
+docker run -d --name btc-tracker -p 3000:3000 -v "$PWD/data:/app/data" \
+  --read-only --cap-drop ALL --security-opt no-new-privileges btc-matrix
 ```
 
 For Podman, build with `podman build --format docker -t btc-matrix .` to preserve
@@ -169,24 +174,30 @@ no public provider access is possible.
 
 ### Container CI and releases
 
-The GitHub Actions container workflow builds each pull request when opened,
-updated, or reopened. PR builds do not log in to Docker Hub or push images.
+CI builds, verifies and scans the final runtime image on pull requests and master
+pushes. PR builds do not log in to Docker Hub or push images. Release tags rerun
+the Rust/browser/advisory checks for the exact commit, then verify and scan the
+candidate image before publishing that same image without rebuilding it.
 
 To enable publishing, add a repository Actions secret named `DOCKERHUB_TOKEN`
 containing a Docker Hub access token for `agaddy` with write access to
 `agaddy/bitcoin_price_tracker`.
 
-Push a stable release tag in the existing `vMAJOR.MINOR.PATCH` format:
+Merge through a passing pull request, then tag the current `master` commit using
+the existing stable `vMAJOR.MINOR.PATCH` format. Only repository admins may create
+release tags; existing release tags cannot be moved or deleted:
 
 ```bash
-git tag v2.3.1
-git push origin v2.3.1
+git tag v2.7.0
+git push origin v2.7.0
 ```
 
-This builds and pushes `agaddy/bitcoin_price_tracker:2.3.1` and
+This builds and pushes `agaddy/bitcoin_price_tracker:2.7.0` and
 `agaddy/bitcoin_price_tracker:latest`. Each published release updates `latest`,
-including releases from older branches. Branch pushes and prerelease tags do
-not publish images. The workflow must be present in the tagged commit.
+and publication requires the tag to match current `master`. Branch pushes and
+prerelease tags do not publish images. The workflow must be present in the tagged
+commit. Weekly checks scan the published digest as well as the current source.
+See [SECURITY.md](SECURITY.md) for image advisory review and repository rules.
 
 ## Configuration and limits
 
@@ -197,6 +208,7 @@ not publish images. The workflow must be present in the tagged commit.
 | `MAX_VIEWERS` | `1000` | 1–100000 |
 | `REQUESTS_PER_SECOND` | `100` | 1–10000 per request group |
 | `REQUEST_CONCURRENCY` | `64` | 1–1024 per request group |
+| `MAX_CONNECTIONS` | `128` | 1–4096 remote TCP connections; up to four separate loopback connections |
 | `SHUTDOWN_SECONDS` | `25` | 1–120 |
 | `RUST_LOG` | `bitcoin_price_tracker=info` locally; `info` in image | tracing filter |
 
@@ -211,9 +223,22 @@ can burst up to one second's allowance. Health has reserved capacity (10 request
 per second, four concurrent). Rate exhaustion returns 429; concurrency exhaustion
 returns 503, both with `Retry-After: 1`. Requests have a 20-second application
 deadline, and presence JSON is limited to 1024 bytes. No limiter stores client/IP
-keys or trusts forwarded IP headers. Configure TLS, connection/header limits, and
-any per-client policy at your reverse proxy; tune these application-wide budgets
+keys or trusts forwarded IP headers. The origin accepts HTTP/1 only, with a
+five-second header deadline, 64 headers, a 16 KiB read buffer, a 25-second total
+connection lifetime, and one request per connection. Loopback health probes have
+their own connection slots. Configure TLS and per-client policy at your reverse
+proxy; tune these application-wide budgets
 to the expected audience. Ordinary dashboard retries already handle 429/503.
+
+Provider requests require HTTPS, do not follow redirects, and accept at most
+64 KiB per response (including chunked bodies). A rejected response preserves
+the last stored quote. Dashboard responses enforce CSP, framing and content-type
+restrictions; API and health responses are not cacheable.
+
+Timestamps use the host clock. Kubernetes nodes need working NTP synchronization;
+the container needs no NTP egress or clock-setting capability. All Kubernetes
+definitions and rollout verification are maintained in the separate `kube_lan`
+repository.
 
 Info logs report provider outcome/duration and startup/shutdown. Debug logs add
 refresh decisions, coverage, and overload decisions. Raw viewer IDs are not logged;

@@ -256,7 +256,12 @@ impl TestApp {
             unix: AtomicI64::new(TEST_NOW),
             monotonic: Mutex::new(Instant::now()),
         });
-        let client = upstream_client_builder().no_proxy().build().unwrap();
+        // Fixtures use loopback HTTP; production keeps HTTPS-only enabled.
+        let client = upstream_client_builder()
+            .https_only(false)
+            .no_proxy()
+            .build()
+            .unwrap();
         let state =
             AppState::with_dependencies(client, db_path, upstreams.endpoints(), clock.clone());
         Self {
