@@ -46,6 +46,10 @@ rules permit creation only by repository admins and prohibit moving/deleting
 `v*` tags, including for admins. Repository settings can still be changed by an
 administrator; secure the maintainer's GitHub account and Docker Hub token.
 
+Rustls is locked to 0.23.45 (with rustls-webpki 0.103.15), fixing
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
+The audit still fails on every unaccepted advisory.
+
 ### AUD-07 runtime advisory review
 
 Review: 2026-09-08. Owner: repository maintainer `ggaddy`. Tracking: AUD-07 in
@@ -67,13 +71,44 @@ by the scanner for Debian 13:
 | [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435) | `libc6` `2.41-12+deb13u3` | Concerns deprecated DNS printing functions `ns_printrr`, `ns_printrrf`, and `fp_nquery`. None is imported; normal hostname resolution does not print DNS records through them. |
 | [CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091) | `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` | Concerns nonblocking gzip writes. The binary links only libc/libm/libgcc/the loader, does not load zlib, and provides no gzip-writing interface. TLS uses Rustls. |
 
-This is an applicability assessment, not a claim that the packages are patched.
-`.grype.yaml` keeps these four reviewed matches visible in table output. The
-remaining 16 matches are unsuppressed (four Medium, one Low, seven Negligible,
-four Unknown). Medium findings concern the same unused DNS printing functions,
-shell word expansion, attacker-supplied `fopen` mode strings, and zlib CRC APIs.
-The application imports none of those interfaces. Review unknown/new records as
-advisory details become available. No blanket `only-fixed` or OS exclusion is used.
+#### Debian 13 digest update review
+
+Re-reviewed on 2026-09-21 for distroless digest
+`54df941ed0d06a1bd95ef5e0ce391fd8d9f94b64782dc9a60062727849ee3f97`
+and `libc6` `2.41-12+deb13u4`. Owner and tracking remain `ggaddy` / AUD-07;
+the **2026-10-08** review deadline is unchanged.
+
+The updated image no longer reports CVE-2026-5450 or CVE-2026-5928. Its two
+unsuppressed High findings concern these interfaces:
+
+| Finding | Package/version | Exposure review |
+| --- | --- | --- |
+| [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435) | `libc6` `2.41-12+deb13u4` | Deprecated DNS-printing APIs `ns_printrr`, `ns_printrrf`, and `fp_nquery`. The release executable imports none of them. Normal hostname resolution is a different interface. |
+| [CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499) | `libc6` `2.41-12+deb13u4` | Buffer overflow in `strfmon` / `strfmon_l` monetary formatting with right-justified padding. The release executable imports neither interface; displayed currencies are formatted in the browser with `Intl.NumberFormat`. |
+
+Debian lists both as vulnerable in trixie with `<no-dsa>` (minor issue); fixes
+are listed for unstable, not the supported Debian 13 base. These are scoped
+applicability exceptions, **not patched packages**. No severity threshold or
+fix-state filter is relaxed. The existing exact-version `deb13u3` exceptions
+remain for the weekly scan of the previously published image until that image
+is replaced. The unchanged zlib exception still applies to the new image.
+
+`scripts/verify_runtime.py` extracts the exact image's release executable and
+uses `readelf` to reject imports of the above APIs
+and linked libraries outside the reviewed libc/libm/libgcc/loader set. This
+keeps future dependency changes from silently invalidating the import review;
+it is not a general proof that a shared library is free of vulnerable code.
+The executable does import `dlopen`/`dlsym` (bundled SQLite includes
+`unixDlOpen`), so the import check does not prohibit all runtime loading.
+Application code does not enable SQLite extension loading or expose arbitrary
+SQL, plugin paths, monetary-format strings, or DNS-printing interfaces.
+Runtime/release CI runs this check before the image scan. Maintainers also
+must reassess exposure on runtime changes and remove exceptions when a
+supported image fixes or removes the affected packages.
+
+`.grype.yaml` keeps reviewed findings visible in scan output and matches the
+CVE, exact binary package version, and package type. Other findings remain
+unsuppressed; no blanket `only-fixed` or OS exclusion is used.
 
 ## Application containment
 
