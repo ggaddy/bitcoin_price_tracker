@@ -2,6 +2,7 @@
 """Verify the final image using an isolated volume and network, without providers."""
 import argparse
 import json
+import re
 import subprocess
 import time
 import tempfile
@@ -51,6 +52,25 @@ try:
     container = command('create', '--network', 'none', '--read-only', '--cap-drop=ALL',
                         '--security-opt=no-new-privileges', '-v', volume + ':/app/data',
                         '-e', 'BIND_ADDRESS=0.0.0.0:3100', '-e', 'SHUTDOWN_SECONDS=5', args.image).stdout.strip()
+    # AUD-07 exceptions depend on these interfaces remaining unused. Inspect the
+    # exact image binary, not a separately built host executable.
+    with tempfile.TemporaryDirectory(prefix='btc-symbol-review-') as directory:
+        binary = str(Path(directory) / 'bitcoin_price_tracker')
+        command('cp', container + ':/usr/local/bin/bitcoin_price_tracker', binary)
+        symbols = subprocess.run(['readelf', '--dyn-syms', '--wide', binary],
+                                 check=True, capture_output=True, text=True).stdout
+        imports = {line.split()[7].split('@')[0] for line in symbols.splitlines()
+                   if len(line.split()) >= 8 and line.split()[6] == 'UND'}
+        blocked = {'strfmon', 'strfmon_l', '__strfmon_l',
+                   'ns_printrr', 'ns_printrrf', 'fp_nquery',
+                   '__ns_printrr', '__ns_printrrf', '__fp_nquery'}
+        assert not imports & blocked, f'Review AUD-07 exposure: {sorted(imports & blocked)}'
+        dynamic = subprocess.run(['readelf', '--dynamic', '--wide', binary],
+                                 check=True, capture_output=True, text=True).stdout
+        needed = set(re.findall(r'\(NEEDED\).*?\[(.*?)\]', dynamic))
+        reviewed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
+        assert needed and needed <= reviewed, f'Review AUD-07 library exposure: {sorted(needed)}'
+        print('AUD-07 release imports and linked-library exposure checks passed.')
     command('start', container)
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
