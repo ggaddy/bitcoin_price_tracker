@@ -35,7 +35,7 @@ before(async () => {
   const ui = await readFile(new URL('../../src/ui.rs', import.meta.url), 'utf8');
   const policy = ui.match(/"(default-src [^"]+)"/)[1];
   server = createServer((req, res) => {
-    const file = files.get(req.url);
+    const file = files.get(new URL(req.url, "http://localhost").pathname);
     res.writeHead(file ? 200 : 404, { 'Content-Type': file?.type ?? 'text/plain', 'Content-Security-Policy': policy });
     res.end(file?.body ?? 'Not found');
   });
@@ -406,4 +406,46 @@ test('RSS scrolls automatically and pauses when requested', async t => {
   const pausedTop = await page.locator('#feed-window').evaluate(el => el.scrollTop);
   await tick(page, 1000);
   assert.equal(await page.locator('#feed-window').evaluate(el => el.scrollTop), pausedTop);
+});
+
+test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
+  const html = await readFile(new URL('../../src/ui.html', import.meta.url));
+  const js = await readFile(new URL('../../src/dashboard.js', import.meta.url));
+  const css = await readFile(new URL('../../src/dashboard.css', import.meta.url));
+  const vendor = await readFile(new URL('../../src/vendor/cybercore-0.3.0.min.css', import.meta.url));
+  const fixture = createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    let body, type = 'text/html', cache = 'no-cache';
+    if (url.pathname === '/warm') {
+      body = '<link rel="stylesheet" href="/assets/dashboard.css"><script src="/assets/dashboard.js"></script>';
+    } else if (url.pathname === '/assets/dashboard.js') {
+      type = 'text/javascript';
+      body = url.search ? js : 'window.legacyDashboard = true;';
+      cache = url.search ? 'no-cache' : 'public, max-age=31536000';
+    } else if (url.pathname === '/assets/dashboard.css') {
+      type = 'text/css';
+      body = url.search ? css : '.feed-window { height: 0px; }';
+      cache = url.search ? 'no-cache' : 'public, max-age=31536000';
+    } else if (url.pathname === '/assets/cybercore-0.3.0.min.css') {
+      type = 'text/css'; body = vendor;
+    } else if (url.pathname.startsWith('/api/')) {
+      type = 'application/json';
+      body = JSON.stringify(url.pathname === '/api/news'
+        ? { stale: false, xml: '<rss><channel><item><title>Fresh RSS headline</title><link>https://news.bitcoin.com/example/</link></item></channel></rss>' }
+        : url.pathname === '/api/price' ? report() : { active_viewers: 1 });
+    } else body = html;
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache });
+    res.end(body);
+  });
+  await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
+  const context = await browser.newContext();
+  t.after(async () => { await context.close(); await new Promise(resolve => fixture.close(resolve)); });
+  const page = await context.newPage();
+  const origin = `http://127.0.0.1:${fixture.address().port}`;
+  await page.goto(origin + '/warm');
+  assert.equal(await page.evaluate(() => window.legacyDashboard), true);
+  await page.goto(origin);
+  await text(page, 'feed-list', 'Fresh RSS headline');
+  assert.equal(await page.evaluate(() => window.legacyDashboard), undefined);
+  assert.equal(await page.locator('#feed-window').evaluate(el => getComputedStyle(el).height), '180px');
 });
