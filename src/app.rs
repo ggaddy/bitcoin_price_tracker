@@ -19,6 +19,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/assets/dashboard.js", get(crate::ui::dashboard_js))
         .route("/assets/dashboard.css", get(crate::ui::dashboard_css))
         .route("/api/price", get(btc_prices))
+        .route("/api/news", get(crate::news::bitcoin_news))
         .route("/api/presence", post(update_presence))
         .layer(axum::extract::DefaultBodyLimit::max(1024))
         .layer(axum::middleware::from_fn_with_state(

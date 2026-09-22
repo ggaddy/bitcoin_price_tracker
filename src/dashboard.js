@@ -235,3 +235,100 @@
     el.note.textContent = "This browser cannot safely track a viewer session. Use a browser with secure random IDs, fetch, and AbortController support.";
   }
 })();
+
+(() => {
+  "use strict";
+  const feedWindow = document.getElementById("feed-window");
+  const feedList = document.getElementById("feed-list");
+  const feedStatus = document.getElementById("feed-status");
+  const feedToggle = document.getElementById("feed-toggle");
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  let feedPaused = reducedMotion.matches;
+  let feedHovered = false;
+  let lastFeedXml = null;
+  let feedLoading = false;
+  let feedCheckedAt = 0;
+  let feedBottomSince = 0;
+  function updateFeedToggle() {
+    feedToggle.textContent = feedPaused ? "Resume scrolling" : "Pause scrolling";
+    feedToggle.setAttribute("aria-pressed", String(feedPaused));
+  }
+  updateFeedToggle();
+  feedToggle.addEventListener("click", () => { feedPaused = !feedPaused; updateFeedToggle(); });
+  reducedMotion.addEventListener("change", () => { feedPaused = reducedMotion.matches; updateFeedToggle(); });
+  feedWindow.addEventListener("mouseenter", () => { feedHovered = true; });
+  feedWindow.addEventListener("mouseleave", () => { feedHovered = false; });
+  // Manual scrolling pauses motion until explicitly resumed.
+  for (const event of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+    feedWindow.addEventListener(event, () => { feedPaused = true; updateFeedToggle(); }, { passive: true });
+  }
+  setInterval(() => {
+    if (feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")) return;
+    if (feedWindow.scrollHeight <= feedWindow.clientHeight) return;
+    if (feedWindow.scrollTop + feedWindow.clientHeight >= feedWindow.scrollHeight - 1) {
+      if (!feedBottomSince) feedBottomSince = Date.now();
+      if (Date.now() - feedBottomSince > 3000) { feedWindow.scrollTop = 0; feedBottomSince = 0; }
+    } else {
+      feedBottomSince = 0;
+      feedWindow.scrollTop += 1;
+    }
+  }, 50);
+
+  async function refreshFeed() {
+    if (document.hidden || feedLoading || Date.now() - feedCheckedAt < 300000) return;
+    feedLoading = true;
+    try {
+      const response = await fetch("/api/news", { signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error("RSS unavailable");
+      const data = await response.json();
+      if (typeof data.xml !== "string") throw new Error("Missing RSS");
+      if (data.xml !== lastFeedXml) {
+        const xml = new DOMParser().parseFromString(data.xml, "application/xml");
+        if (xml.querySelector("parsererror")) throw new Error("Invalid RSS");
+        const entries = document.createDocumentFragment();
+        const seen = new Set();
+        for (const item of xml.querySelectorAll("channel > item")) {
+          const title = item.querySelector("title")?.textContent.trim();
+          let url;
+          try { url = new URL(item.querySelector("link")?.textContent.trim()); } catch { continue; }
+          if (!title || !["https:", "http:"].includes(url.protocol) || seen.has(url.href)) continue;
+          seen.add(url.href);
+          const li = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = url.href;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = title;
+          li.append(link);
+          const date = new Date(item.querySelector("pubDate")?.textContent);
+          if (!Number.isNaN(date.getTime())) {
+            const time = document.createElement("time");
+            time.dateTime = date.toISOString();
+            time.textContent = date.toLocaleString();
+            li.append(time);
+          }
+          entries.append(li);
+          if (seen.size >= 30) break;
+        }
+        if (!seen.size) throw new Error("No headlines");
+        feedList.replaceChildren(entries);
+        feedWindow.scrollTop = 0;
+        lastFeedXml = data.xml;
+      }
+      feedStatus.textContent = data.stale
+        ? "Bitcoin.com · Cached headlines — refresh temporarily unavailable"
+        : "Bitcoin.com · RSS · Updates every 5 minutes";
+    } catch {
+      feedStatus.textContent = lastFeedXml
+        ? "Bitcoin.com · Showing previous headlines — retrying in 5 minutes"
+        : "Bitcoin news temporarily unavailable — retrying in 5 minutes";
+    } finally {
+      feedLoading = false;
+      feedCheckedAt = Date.now();
+    }
+  }
+  refreshFeed();
+  setInterval(refreshFeed, 15000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFeed(); });
+
+})();

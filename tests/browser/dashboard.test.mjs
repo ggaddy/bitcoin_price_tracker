@@ -83,6 +83,7 @@ async function setup(t, options = {}) {
       if (options.presence) return options.presence(route, body);
       return json(route, { active_viewers: body.active ? 1 : 0 });
     }
+    if (url.endsWith('/api/news')) return options.news ? options.news(route) : json(route, { xml: null, stale: true }, 503);
     if (url.endsWith('/api/price')) {
       prices++;
       return options.price ? options.price(route, prices) : json(route, report());
@@ -124,7 +125,7 @@ test('first load renders source semantics, coverage, and safe variable text', as
   await text(page, 'sources', '<script>bad()</script>');
   assert.equal(await page.locator('#sources img, #sources script').count(), 0);
   assert.match(await page.locator('#avg').textContent(), /100\u2009150\.00/);
-  assert.equal(await page.locator('[role=status]').count(), 1);
+  assert.equal(await page.locator('[role=status]').count(), 2);
   assert.equal(await page.locator('#warnings').getAttribute('aria-live'), null);
   if (process.env.BTC_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.BTC_SCREENSHOT_DIR}/desktop.png`, fullPage: true });
 });
@@ -367,4 +368,42 @@ test('network heartbeat failures remain recoverable', async t => {
   fail = false;
   await tick(page, 5100);
   await text(page, 'status', 'LIVE');
+});
+
+
+test('Bitcoin.com RSS renders safe links inside Feed activity and respects pause controls', async t => {
+  const xml = `<rss><channel>
+    <item><title><![CDATA[Bitcoin <img src=x onerror=alert(1)>]]></title><link>https://news.bitcoin.com/example/</link><pubDate>Mon, 21 Sep 2026 12:00:00 GMT</pubDate></item>
+    <item><title>Unsafe link</title><link>javascript:alert(1)</link></item>
+  </channel></rss>`;
+  const { page } = await setup(t, { reducedMotion: 'reduce', news: route => json(route, { xml, stale: false }) });
+  await text(page, 'feed-list', 'Bitcoin <img');
+  assert.equal(await page.locator('.session #feed-list a').count(), 1);
+  assert.equal(await page.locator('#feed-list img').count(), 0);
+  assert.equal(await page.locator('#feed-list a').getAttribute('href'), 'https://news.bitcoin.com/example/');
+  await text(page, 'feed-toggle', 'Resume scrolling');
+  await page.locator('#feed-toggle').click();
+  await text(page, 'feed-toggle', 'Pause scrolling');
+  await page.locator('#feed-toggle').click();
+  assert.equal(await page.locator('#feed-toggle').getAttribute('aria-pressed'), 'true');
+});
+
+test('RSS failure leaves price dashboard working', async t => {
+  const { page } = await setup(t);
+  await text(page, 'feed-status', 'temporarily unavailable');
+  await text(page, 'status', 'LIVE');
+});
+
+
+test('RSS scrolls automatically and pauses when requested', async t => {
+  const xml = '<rss><channel>' + Array.from({ length: 10 }, (_, i) => `<item><title>Bitcoin headline ${i}</title><link>https://news.bitcoin.com/story-${i}/</link></item>`).join('') + '</channel></rss>';
+  const { page } = await setup(t, { news: route => json(route, { xml, stale: false }) });
+  await text(page, 'feed-list', 'Bitcoin headline 9');
+  await tick(page, 1000);
+  const top = await page.locator('#feed-window').evaluate(el => el.scrollTop);
+  assert.ok(top > 0);
+  await page.locator('#feed-toggle').click();
+  const pausedTop = await page.locator('#feed-window').evaluate(el => el.scrollTop);
+  await tick(page, 1000);
+  assert.equal(await page.locator('#feed-window').evaluate(el => el.scrollTop), pausedTop);
 });

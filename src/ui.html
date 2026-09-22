@@ -44,6 +44,14 @@
             <div><dt class="label">Last price update</dt><dd class="value" id="updated">-</dd></div>
             <div><dt class="label">Active viewers</dt><dd class="value" id="viewers">0</dd></div>
           </dl>
+          <div class="news-heading">
+            <span class="label">Bitcoin.com RSS</span>
+            <button type="button" class="cyber-btn cyber-btn--sm feed-toggle" id="feed-toggle" aria-pressed="false">Pause scrolling</button>
+          </div>
+          <p class="label" id="feed-status" role="status">Loading Bitcoin.com RSS…</p>
+          <div class="feed-window" id="feed-window" tabindex="0" role="region" aria-label="Bitcoin news headlines">
+            <ul class="feed-list" id="feed-list"></ul>
+          </div>
         </section>
         </div>
       </div>

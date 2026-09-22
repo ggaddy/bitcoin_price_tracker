@@ -326,3 +326,7 @@ is unique. A supplied conflicting name is rejected; existing containers are neve
 removed. Cleanup uses only IDs created by the runner, including failure paths.
 For a manually managed WebDriver with host Cargo, set `WEBDRIVER_URL` and
 `SELENIUM_APP_HOST` and run `cargo test --locked selenium_dashboard_smoke_test -- --ignored`.
+
+## Bitcoin news
+
+Feed activity includes Bitcoin.com RSS headlines, cached by the server for five minutes. Headlines scroll automatically; hover, focus, or use Pause scrolling to read at your own pace. Reduced-motion preferences disable automatic news scrolling by default.
