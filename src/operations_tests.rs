@@ -298,6 +298,7 @@ async fn security_headers_cover_assets_errors_and_overload() {
     for path in [
         "/",
         "/assets/dashboard.css",
+        "/assets/dashboard.js?v=2.9.1",
         "/missing",
         "/api/price",
         "/api/price",
@@ -318,9 +319,14 @@ async fn security_headers_cover_assets_errors_and_overload() {
         assert!(policy.contains("frame-ancestors 'none'"));
         assert!(!policy.contains("unsafe-inline"));
         assert_eq!(headers["x-content-type-options"], "nosniff");
-        if path.starts_with("/api/") {
-            assert_eq!(headers["cache-control"], "no-store");
-        }
+        assert_eq!(
+            headers["cache-control"],
+            if path.starts_with("/api/") {
+                "no-store"
+            } else {
+                "no-cache"
+            }
+        );
     }
 }
 

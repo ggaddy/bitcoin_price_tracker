@@ -17,9 +17,12 @@ pub(crate) async fn security_headers(
     );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    if is_api {
-        headers.insert("cache-control", HeaderValue::from_static("no-store"));
-    }
+    // HTML and assets must revalidate so a deployment cannot mix UI versions.
+    // The query version in ui.html also bypasses already-cached legacy assets.
+    headers.insert(
+        "cache-control",
+        HeaderValue::from_static(if is_api { "no-store" } else { "no-cache" }),
+    );
     response
 }
 
