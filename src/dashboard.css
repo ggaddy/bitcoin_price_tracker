@@ -74,3 +74,14 @@ html.page-hidden *, html.page-hidden *::before, html.page-hidden *::after { anim
   .source-card .value { font-size: 18px; }
 }
 @media (max-width: 360px) { .sources-grid, .session dl { grid-template-columns: 1fr; } }
+
+.news-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+.feed-toggle { font-size: 10px; cursor: pointer; }
+#feed-status { font-size: 10px; letter-spacing: 0; text-transform: none; margin-top: 10px; }
+.feed-window { height: 180px; overflow-y: auto; margin-top: 10px; scrollbar-color: var(--cyber-yellow-500) var(--color-bg-secondary); }
+.feed-list { list-style: none; margin: 0; padding: 0; }
+.feed-list li { padding: 12px 3px; border-top: 1px solid var(--color-border-default); }
+.feed-list a { color: var(--cyber-yellow-500); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; text-decoration: none; }
+.feed-list a:hover { text-decoration: underline; }
+.feed-list time { display: block; margin-top: 6px; color: var(--color-text-secondary); font-size: 10px; }
+.feed-window:focus-visible, .feed-toggle:focus-visible { outline: 2px solid var(--cyber-cyan-500); outline-offset: 2px; }

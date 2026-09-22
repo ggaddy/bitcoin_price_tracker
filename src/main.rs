@@ -6,6 +6,7 @@ mod handlers;
 mod lifecycle;
 mod limits;
 mod models;
+mod news;
 mod presence;
 mod pricing;
 mod refresh;
