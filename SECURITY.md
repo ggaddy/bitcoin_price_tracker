@@ -110,6 +110,52 @@ supported image fixes or removes the affected packages.
 CVE, exact binary package version, and package type. Other findings remain
 unsuppressed; no blanket `only-fixed` or OS exclusion is used.
 
+#### October 2026 release review
+
+Re-reviewed on 2026-10-10 for the UI release. Owner: `ggaddy`; tracking:
+AUD-07 in [the audit](SECURITY_AUDIT.md). Review before **2026-11-10**;
+`scripts/check_image_exceptions.py` enforces this deadline. Remove exceptions
+when supported packages fix the findings, and reassess on runtime changes.
+
+The previous pinned distroless image contains `libssl3t64`
+`3.5.7-1~deb13u2`, with four High findings fixed in `3.5.7-1~deb13u3`.
+The updated Debian 13 nonroot image index is pinned to
+`e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2`;
+its amd64 manifest is
+`20afe6a70f2565277b704cc17289cb557f353a3619f6350f52a2317106598df4`.
+Grype 0.118.0 with its 2026-10-10 database no longer reports those four High
+OpenSSL findings in this image. They are not excepted.
+
+Debian still lists [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435)
+and [CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499)
+against trixie's `libc6` `2.41-12+deb13u4`, and
+[CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091)
+against the retained zlib version. The existing exact-version exceptions remain:
+the release executable imports none of the affected DNS-printing or monetary
+formatting functions and does not link zlib. Old `deb13u3` exceptions are removed;
+the deployed v2.9.1 image and new candidate both use `deb13u4`.
+
+Two new advisories are attributed to each of `gcc-14-base`, `libgcc-s1`,
+`libgomp1`, and `libstdc++6`, all at version `14.2.0-19`:
+
+| Finding | Exposure review |
+| --- | --- |
+| [CVE-2026-95619](https://security-tracker.debian.org/tracker/CVE-2026-95619) | Integer overflow in the C++ aligned allocation operator. The application uses Rust with C SQLite/ring dependencies, does not link `libstdc++` or `libgomp`, and imports no C++ symbols. The linked `libgcc_s` unwinding library does not implement the affected C++ allocation operator. |
+| [CVE-2026-102010](https://security-tracker.debian.org/tracker/CVE-2026-102010) | Use-after-free in the libstdc++ binary-heap priority queue's `erase_if` implementation. No application or dependency code uses this C++ container; no C++ runtime is linked. |
+
+Debian reports no supported trixie fix for these two advisories; newer fixed
+GCC packages are in unstable. `.grype.yaml` scopes each new exception to the
+specific CVE, Debian binary package, and `14.2.0-19` version. Findings remain
+visible and the High/Critical failure threshold remains unchanged.
+
+Runtime verification inspects the exact image executable's imports and linked
+libraries. The verification now
+also rejects C++ mangled imports, in addition to rejecting linked libraries
+outside libc/libm/libgcc/the loader. These checks support the applicability
+review; they do not prove every shared-library or dynamically loaded code path
+safe. SQLite extension loading remains disabled and no arbitrary plugin/SQL
+interface is exposed.
+
 ## Application containment
 
 Provider requests require HTTPS, never follow redirects, and read at most 64 KiB

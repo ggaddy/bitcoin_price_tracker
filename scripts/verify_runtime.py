@@ -65,6 +65,8 @@ try:
                    'ns_printrr', 'ns_printrrf', 'fp_nquery',
                    '__ns_printrr', '__ns_printrrf', '__fp_nquery'}
         assert not imports & blocked, f'Review AUD-07 exposure: {sorted(imports & blocked)}'
+        cpp_imports = {symbol for symbol in imports if symbol.startswith('_Z')}
+        assert not cpp_imports, f'Review AUD-07 C++ exposure: {sorted(cpp_imports)}'
         dynamic = subprocess.run(['readelf', '--dynamic', '--wide', binary],
                                  check=True, capture_output=True, text=True).stdout
         needed = set(re.findall(r'\(NEEDED\).*?\[(.*?)\]', dynamic))

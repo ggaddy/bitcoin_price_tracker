@@ -69,7 +69,7 @@ async fn selenium_dashboard_smoke_test() -> Result<(), Box<dyn std::error::Error
         let average = wait_for_text(&driver, "avg").await?;
         let status = wait_for_text(&driver, "status").await?;
         let source = wait_for_text(&driver, "sources").await?;
-        if title != "BTC Tracker" || heading != "BTC TRACKER"
+        if title != "BTC Tracker" || heading != "BITCOIN TRACKER"
             || !average.replace(['\u{2009}', ','], "").contains("100150.00")
             || status != "LIVE" || !source.to_ascii_lowercase().contains("coingecko") {
             return Err(format!("Unexpected dashboard: title={title}, heading={heading}, average={average}, status={status}").into());
