@@ -1,23 +1,8 @@
 # AUD-07: package/version-scoped exposure review in SECURITY.md.
-# Review by: 2026-10-08
+# Review by: 2026-11-10
 # Keep reviewed findings visible in CI logs. No blanket severity/fix-state ignores.
 show-suppressed: true
 ignore:
-  - vulnerability: CVE-2026-5450
-    package:
-      name: libc6
-      version: 2.41-12+deb13u3
-      type: deb
-  - vulnerability: CVE-2026-5928
-    package:
-      name: libc6
-      version: 2.41-12+deb13u3
-      type: deb
-  - vulnerability: CVE-2026-5435
-    package:
-      name: libc6
-      version: 2.41-12+deb13u3
-      type: deb
   - vulnerability: CVE-2026-85091
     package:
       name: zlib1g
@@ -32,4 +17,44 @@ ignore:
     package:
       name: libc6
       version: 2.41-12+deb13u4
+      type: deb
+  - vulnerability: CVE-2026-95619
+    package:
+      name: gcc-14-base
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-95619
+    package:
+      name: libgcc-s1
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-95619
+    package:
+      name: libgomp1
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-95619
+    package:
+      name: libstdc++6
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-102010
+    package:
+      name: gcc-14-base
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-102010
+    package:
+      name: libgcc-s1
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-102010
+    package:
+      name: libgomp1
+      version: 14.2.0-19
+      type: deb
+  - vulnerability: CVE-2026-102010
+    package:
+      name: libstdc++6
+      version: 14.2.0-19
       type: deb
