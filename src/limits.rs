@@ -54,6 +54,7 @@ pub(crate) struct RequestLimits {
     price: Gate,
     presence: Gate,
     health: Gate,
+    news: Gate,
     assets: Gate,
 }
 impl RequestLimits {
@@ -62,6 +63,7 @@ impl RequestLimits {
             price: Gate::new(config.requests_per_second, config.concurrency, now),
             presence: Gate::new(config.requests_per_second, config.concurrency, now),
             health: Gate::new(10, 4, now),
+            news: Gate::new(config.requests_per_second, config.concurrency.min(8), now),
             assets: Gate::new(config.requests_per_second, config.concurrency, now),
         }
     }
@@ -78,6 +80,7 @@ pub(crate) async fn limit_requests(
         "/api/price" => &state.limits.price,
         "/api/presence" => &state.limits.presence,
         "/health" => &state.limits.health,
+        "/api/news" => &state.limits.news,
         _ => &state.limits.assets,
     };
     if !gate.allow(state.clock.now_monotonic()) {

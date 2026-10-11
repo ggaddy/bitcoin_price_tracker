@@ -247,7 +247,8 @@
   let feedHovered = false;
   let lastFeedXml = null;
   let feedLoading = false;
-  let feedCheckedAt = 0;
+  let feedNextCheck = 0;
+  let feedTimer;
   let feedBottomSince = 0;
   function updateFeedToggle() {
     feedToggle.textContent = feedPaused ? "Resume scrolling" : "Pause scrolling";
@@ -275,12 +276,20 @@
   }, 50);
 
   async function refreshFeed() {
-    if (document.hidden || feedLoading || Date.now() - feedCheckedAt < 300000) return;
+    if (document.hidden || feedLoading || Date.now() < feedNextCheck) return;
+    clearTimeout(feedTimer);
     feedLoading = true;
+    let retryDelay = 300000;
     try {
       const response = await fetch("/api/news", { signal: AbortSignal.timeout(15000) });
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      if ((response.status === 429 || response.status === 503 || response.ok)
+          && Number.isFinite(retryAfter) && retryAfter > 0) {
+        retryDelay = Math.min(30, Math.max(1, retryAfter)) * 1000;
+      }
       if (!response.ok) throw new Error("RSS unavailable");
       const data = await response.json();
+      if (data.refreshing) retryDelay = 2000;
       if (typeof data.xml !== "string") throw new Error("Missing RSS");
       if (data.xml !== lastFeedXml) {
         const xml = new DOMParser().parseFromString(data.xml, "application/xml");
@@ -315,20 +324,23 @@
         feedWindow.scrollTop = 0;
         lastFeedXml = data.xml;
       }
-      feedStatus.textContent = data.stale
+      feedStatus.textContent = data.refreshing
+        ? "Bitcoin.com · Refreshing cached headlines"
+        : data.stale
         ? "Bitcoin.com · Cached headlines — refresh temporarily unavailable"
         : "Bitcoin.com · RSS · Updates every 5 minutes";
     } catch {
+      const retry = retryDelay < 300000 ? "retrying shortly" : "retrying in 5 minutes";
       feedStatus.textContent = lastFeedXml
-        ? "Bitcoin.com · Showing previous headlines — retrying in 5 minutes"
-        : "Bitcoin news temporarily unavailable — retrying in 5 minutes";
+        ? `Bitcoin.com · Showing previous headlines — ${retry}`
+        : `Bitcoin news temporarily unavailable — ${retry}`;
     } finally {
       feedLoading = false;
-      feedCheckedAt = Date.now();
+      feedNextCheck = Date.now() + retryDelay;
+      feedTimer = setTimeout(refreshFeed, retryDelay);
     }
   }
   refreshFeed();
-  setInterval(refreshFeed, 15000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFeed(); });
 
 })();

@@ -1,3 +1,73 @@
+**Security and performance follow-up — October 11, 2026 UTC**
+
+Scope: deployed v2.9.3; application changes start from master `2245a93`.
+The historical audit below retains its original dates and status.
+
+- [x] **F1 — Isolate RSS availability.** Give news its own request/concurrency
+  budget, refresh once in the background, and immediately serve cached headlines.
+  Cover cold start, concurrent readers, refresh failure/retry, and independent
+  asset capacity with deterministic regressions. Repeat the isolated contention
+  test against the final image.
+- [x] **F2 — Verify client fairness and align capacity.** Inspect the tracker's
+  Cloudflare per-client controls and intended access policy; add service-scoped
+  controls where needed. Align the default global budget with 1,000 viewers
+  polling every five seconds, while retaining bounded admission and concurrency.
+  Record any limits that remain operational assumptions rather than tested capacity.
+- [x] **F3 — Configure HTTPS HSTS.** Apply a host-scoped HSTS policy at the public
+  HTTPS edge and the cluster HTTPS route. Do not change unrelated domains or the
+  intentional LAN HTTP route. Verify headers on successful HTTPS responses.
+- [x] **F4 — Add asset validators.** Generate content-based ETags for embedded
+  assets, honor conditional GET/HEAD requests, retain API `no-store` and HTML/asset
+  revalidation, and verify changed assets receive a different validator.
+
+Implementation and live edge configuration: **4 of 4 complete**. The application
+changes await PR merge and release/deployment; v2.9.3 remains deployed. Hosted CI
+is a required pre-merge checkpoint.
+
+**Verification and next steps**
+
+- Formatting and Clippy pass; Rust: 103 pass, one existing Selenium test ignored.
+  Chromium: 29 pass against both static source and the final embedded assets,
+  including cold RSS retries, hidden-tab deferral and safe RSS rendering. The
+  deployment-cache regression warms old `v=2.9.2` URLs; `v=2.9.4` bypasses their
+  prior four-hour browser cache lifetime.
+- Final-image non-root startup, persistence, health/recovery, shutdown and library
+  checks pass. With 64 news requests and a stalled TLS refresh, news returns in
+  0.8–4.3 ms; homepage, JavaScript and health remain 200. News has a separate
+  budget, at most eight handlers, one 12-second background refresh and a
+  five-minute failure backoff.
+- Actual HTTP conditional GET/HEAD for all three embedded assets returns empty
+  304 responses with ETag and `no-cache`; mismatches return the current body.
+  API/health remain `no-store`. Runtime scanning found no unexcepted High or
+  Critical advisories; the existing 11 High matches retain their reviewed
+  exceptions and November 10, 2026 deadline. Lower findings are unchanged.
+- Cloudflare had zero rate-limiting rules. A new host-only per-IP rule allows
+  100 requests/10 seconds and blocks for 10 seconds. A controlled browser burst
+  returned 96 asset successes, then Cloudflare 429 with `Retry-After: 10`;
+  ordinary dashboard traffic also consumed the counter. Price requests recovered
+  to 200. Shared NAT users share this budget; roughly 25 tabs fit before overhead.
+  Edge-location counters can lag: this is not exact per-user fairness or
+  distributed-attack protection. Monitor before expanding public traffic.
+- Default origin allowance is now 250/second per group, covering the nominal
+  200/second polling demand from 1,000 tabs with 25% rate headroom. This is not a
+  tested 1,000-viewer throughput guarantee; v2.9.3 keeps its old default.
+- HSTS `max-age=86400` is live on successful public and cluster HTTPS responses,
+  without subdomains/preload. LAN HTTP returns 200 without HSTS. GitOps correction
+  `07dd8ba` is Synced/Healthy. Observe HTTPS availability before extending the
+  initial one-day lifetime.
+- A host-only Cloudflare cache rule now respects origin directives, removing the
+  asset `max-age=14400` rewrite: public assets use `no-cache`; price/health use
+  `no-store` and edge BYPASS. Public 304 behavior awaits application deployment.
+  Access is still **Allow Everyone** (`home-cluster-gaddy-it-public`); no Access
+  policy was changed. Rule IDs/expressions and operational caveats are recorded
+  in [SECURITY.md](SECURITY.md) and the GitOps inventory.
+
+**Next checkpoint:** application PR and all five required CI checks, then
+merge/release/deploy when requested. Release tags and the deployed image are
+unchanged by this follow-up.
+
+---
+
 **Project audit and improvement plan — September 6, 2026**
 
 Baseline: commit `cc4a9fb`. Reviewed the tracked source, configuration, documentation, test runner, and recent history. The working tree was clean at the start. The findings and baseline validation below describe that commit; subsequent implementation progress is recorded in the tracker and change log. P1 is committed as `9bce95b` and P2.1 as `6990aa6`. P2.2 is committed as `0fdc65f`. P2.3 is committed as `4f850bd`. P2.4 is committed as `47a5c6a`. P2.5 is committed as `aa5e520` and released as `v2.4.9`. P2.6 and P2.7 are committed as `728755c` and released as `v2.4.10`. P3.1 and P3.2 are committed as `fbe51e5`. P3.3–P3.6 are committed as `b6a7a1d` and released as `v2.4.11`; the user deployed that release separately. P4.1–P4.6 are committed as `fd922b2` and released as `v2.5.0`. P5.1–P5.7 and the requested seconds-only age label are implemented in the working tree, not yet committed.

@@ -67,7 +67,7 @@ impl Default for RuntimeConfig {
         Self {
             bind_address: "0.0.0.0:3000".parse().unwrap(),
             max_viewers: 1000,
-            requests_per_second: 100,
+            requests_per_second: 250,
             concurrency: 64,
             max_connections: 128,
             shutdown_seconds: 25,
