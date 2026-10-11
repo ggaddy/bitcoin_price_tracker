@@ -309,6 +309,25 @@ impl TestApp {
         self.request(Method::GET, "/api/price", None).await
     }
 
+    pub(crate) async fn wait_for_refresh(&self) {
+        let guard = timeout(Duration::from_secs(10), self.state.refresh.lock())
+            .await
+            .expect("background refresh completed");
+        drop(guard);
+    }
+
+    // Persistence/rotation regressions explicitly wait for background completion.
+    // Response-latency regressions use price() and held providers instead.
+    pub(crate) async fn refresh_and_price(&self) -> (StatusCode, Value) {
+        let response = self.price().await;
+        if response.1["refreshing"] == true {
+            self.wait_for_refresh().await;
+            self.price().await
+        } else {
+            response
+        }
+    }
+
     pub(crate) async fn request(
         &self,
         method: Method,

@@ -138,6 +138,7 @@ mod tests {
             PresencePayload {
                 session_id: "viewer-1".to_string(),
                 active: true,
+                include_price: false,
             },
         )
         .await;

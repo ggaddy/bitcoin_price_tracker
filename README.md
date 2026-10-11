@@ -17,7 +17,7 @@ binary, so styling works without a CDN or a frontend build step.
 - Skips refreshes when the latest snapshot is under 10 seconds old or the previous attempt started less than 10 seconds ago
 - Backs off failed providers for 10, 20, 40, 80, 160, then 300 seconds; successful provider recovery resets the delay
 - Honors longer valid `Retry-After` delays or HTTP dates, skipping cooling-down providers while others continue
-- Serves stored prices while another request refreshes; concurrent cold-start requests receive 503 until a snapshot is available
+- Immediately serves stored prices while one background task refreshes; all cold-start price requests receive 503 until a snapshot is available
 - Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
 - Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
 - Requires finite, positive prices; merges successful provider results with retained quotes when other providers fail
@@ -26,7 +26,15 @@ binary, so styling works without a CDN or a frontend build step.
 - Persists each provider's last successful observation time and quote kind, preserving both when another provider refreshes or that provider fails
 - Saves provider outcomes and successful quotes in one transaction; all-provider failure saves health without advancing quote timestamps
 
-The API's `refresh_succeeded` is true when at least one new quote was saved, including partial refreshes. Partial snapshots include a warning for each failed provider. When every provider fails, errors appear in that request's response, the quote snapshot remains intact, and the latest outcomes are saved independently. Any persistence failure rolls back both quotes and health. Snapshot timestamps describe persistence; response aggregates are recomputed from qualifying source observations on every request.
+The API's `refreshing` reports background refresh activity. `refresh_succeeded`
+describes the latest completed attempt in this process: true when at least one
+new quote was saved, including partial refreshes, and false before any completed
+attempt or after a health-only failure/write failure. Cached reads do not reset
+it. Partial snapshots include a warning for each failed provider. Failed refreshes
+retain quotes and report safe errors on subsequent reads; completed provider
+outcomes are saved independently. Any persistence failure rolls back both quotes
+and health. Snapshot timestamps describe persistence; response aggregates are
+recomputed from qualifying source observations on every request.
 
 The API now includes `provider_health` for all configured providers, including
 those without a quote. Each record contains the provider `source` and a
@@ -84,6 +92,17 @@ between completed requests. Presence has a three-second deadline and prices an
 eight-second deadline, including response bodies. Hidden pages cancel requests,
 stop timers, and send inactive presence; returning resumes one set of loops.
 Failures retry automatically and retain received quotes with an age warning.
+
+The first active heartbeat opts into `include_price: true`. After viewer admission,
+its HTTP 200 response includes a `price` object evaluated from the stored snapshot,
+even if that object's status is UNAVAILABLE on cold start. The browser renders it
+without an initial price GET, then checks again after one second if a background
+refresh is running, or five seconds otherwise. Later heartbeats omit the option.
+If an older server omits the snapshot or startup fails, the bounded price GET
+remains a fallback. All price reads return without waiting for providers; admitted
+startup requests and ordinary price reads share the same single refresh owner,
+attempt cadence and provider backoff. Shutdown prevents new refreshes and drains
+dispatched price work through its database commit within the existing grace period.
 
 Source cards show quote kind, elapsed seconds, and the latest provider error,
 including providers without quotes. Coverage and indicative aggregates update

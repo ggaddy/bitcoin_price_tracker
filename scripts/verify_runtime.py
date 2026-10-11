@@ -112,8 +112,13 @@ for active in [True, False, True, False]:
     assert status == 200 and data['active_viewers'] == int(active)
     assert data['average_price'] == 100150 and not data['refresh_succeeded']
     assert all(health['last_attempt']['outcome'] == 'success' for health in data['provider_health'])
+status, startup = request('/api/presence', {'session_id':'runtime-startup', 'active':True, 'include_price':True})
+assert status == 200 and startup['active_viewers'] == 1
+assert startup['price']['status'] == 'LIVE' and startup['price']['average_price'] == 100150
+assert not startup['price']['refreshing'] and not startup['price']['refresh_succeeded']
+assert request('/api/presence', {'session_id':'runtime-startup', 'active':False}) == (200, {'active_viewers':0})
 assert request('/health') == (200, {'status':'ok'})
-print('Seeded quote serving and pause/resume passed without upstream calls.')
+print('Seeded quote serving, cached startup registration and pause/resume passed without upstream calls.')
 ''', mount=True)
     command('stop', '--time', '10', container)
     assert command('inspect', '--format', '{{.State.ExitCode}}', container).stdout.strip() == '0'

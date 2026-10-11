@@ -11,7 +11,7 @@ function report(overrides = {}) {
   return {
     status: 'LIVE', stale: false, source_max_age_seconds: 90, evaluated_at_unix: now,
     fetched_at_unix: now, fetched_age_seconds: 0, active_viewers: 1, warnings: [],
-    average_price: 100150, spread: 300, refresh_succeeded: true,
+    average_price: 100150, spread: 300, refresh_succeeded: true, refreshing: false,
     coverage: { configured_source_count: 4, fresh_source_count: 4, contributing_sources: [...providers] },
     sources: providers.map((source, index) => ({ source, price_usd: 100000 + index * 100,
       last_success_at_unix: now, quote_kind: ['aggregate', 'spot', 'last_trade', 'bid'][index], age_seconds: 0, freshness: 'fresh' })),
@@ -110,6 +110,68 @@ async function text(page, id, expected) {
   }
 }
 async function tick(page, ms) { await page.clock.runFor(ms); }
+
+test('registration renders its cached price without an initial price GET and keeps later heartbeats small', async t => {
+  const app = await setup(t, { presence: (route, body) => json(route, {
+    active_viewers: body.active ? 1 : 0, ...(body.include_price ? { price: report() } : {}),
+  }) });
+  await text(app.page, 'status', 'LIVE');
+  await text(app.page, 'sources', 'Coinbase');
+  assert.equal(app.prices(), 0);
+  assert.equal(app.presence[0].include_price, true);
+  await tick(app.page, 5100);
+  assert.equal(app.prices(), 1);
+  assert.ok(app.presence.some(body => body.active && body.include_price === undefined));
+  assert.equal(app.maxPrices(), 1);
+  assert.equal(app.maxPresence(), 1);
+});
+
+test('cold startup registration retries prices promptly while keeping viewer admission successful', async t => {
+  const app = await setup(t, { presence: (route, body) => json(route, {
+    active_viewers: 1, ...(body.include_price ? { price: unavailableWithRefresh() } : {}),
+  }) });
+  await text(app.page, 'status', 'UNAVAILABLE');
+  assert.equal(app.prices(), 0);
+  await tick(app.page, 1100);
+  await text(app.page, 'status', 'LIVE');
+  assert.equal(app.prices(), 1);
+  assert.equal(await app.page.locator('#warnings').textContent(), 'None');
+});
+
+function unavailableWithRefresh() { return { ...unavailable(), refreshing: true }; }
+
+test('invalid startup price falls back safely to the ordinary price endpoint', async t => {
+  const app = await setup(t, { presence: (route, body) => json(route, {
+    active_viewers: 1, ...(body.include_price ? { price: { sources: [] } } : {}),
+  }) });
+  await text(app.page, 'status', 'LIVE');
+  await text(app.page, 'sources', 'CoinGecko');
+  assert.equal(app.prices(), 1);
+  assert.equal(await app.page.locator('#warnings').textContent(), 'None');
+});
+
+test('startup response body completed after hide cannot render quotes or start a price loop', async t => {
+  const app = await setup(t, {
+    presence: (route, body) => json(route, { active_viewers: 1, ...(body.include_price ? { price: report() } : {}) }),
+    init: () => {
+      const originalFetch = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[0] === '/api/presence' && JSON.parse(args[1]?.body ?? '{}').include_price) {
+          const body = await response.text();
+          response.text = () => new Promise(resolve => { window.releaseStartupBody = () => resolve(body); });
+        }
+        return response;
+      };
+    },
+  });
+  await app.page.waitForFunction(() => typeof window.releaseStartupBody === 'function');
+  await app.page.evaluate(() => { window.changeVisibility(true); window.releaseStartupBody(); });
+  await tick(app.page, 1000);
+  assert.equal(await app.page.locator('#status').textContent(), 'IDLE');
+  assert.equal(await app.page.locator('#avg').textContent(), 'Loading...');
+  assert.equal(app.prices(), 0);
+});
 
 test('first load renders source semantics, coverage, and safe variable text', async t => {
   const data = report();

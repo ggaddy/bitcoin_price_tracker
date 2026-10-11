@@ -1,3 +1,43 @@
+**Client loading improvements — October 11, 2026 UTC**
+
+Baseline: deployed v2.9.4 (`3660a9f`). Browser sampling found the first price at
+about 2.5 seconds on simulated Slow 4G with 4x CPU slowdown; initial registration
+and the following price GET each took about 0.6 seconds. These are lab samples,
+not field measurements or a throughput guarantee.
+
+- [x] **L1 — Return initial cached prices with viewer registration.** An admitted
+  active heartbeat can opt into `include_price: true`; its response contains the
+  evaluated stored price report. The dashboard renders it without an immediate
+  price GET. Later heartbeats stay small. Preserve bounded requests, safe response
+  validation, hidden-tab cancellation and compatibility with older servers.
+- [x] **L2 — Serve cached prices during one background refresh.** Every price
+  caller, including the first caller, returns without waiting for providers.
+  Keep the existing single refresh owner, ten-second gates, full-refresh
+  generations, provider cooldowns, atomic quote/health writes and 90-second source
+  freshness policy. Dispatched work survives client cancellation; shutdown
+  prevents new work and drains its commit within the existing grace period.
+- [ ] **L3 — Later: immutable, content-hashed asset URLs.** Deferred at the user's
+  request. Each changed asset needs a new enforced URL, with prior files available
+  during rollouts/rollbacks. Keep HTML revalidation and API `no-store`. The current
+  query-version routes must not simply receive a long cache lifetime.
+
+Local checks: 109 Rust tests pass (one existing Selenium test requires an explicit
+WebDriver); 33 Chromium tests pass; formatting and Clippy pass. Held-provider
+regressions check immediate first/cached/cold responses, admission, stale source
+ages, provider cooldowns, persistence rollback, independent request capacity and
+background shutdown draining. Startup tests verify no extra initial price GET,
+bounded cold-start retry, malformed-response fallback and hidden-tab safety.
+The final image also passes all 33 browser tests against its embedded assets and
+the runtime startup, cached registration, storage/recovery, shutdown and library
+exposure checks. Hosted CI (including the image scan) is the next checkpoint.
+No immutable-cache policy, release or production rollout is included.
+
+The previous security follow-up below was released and deployed as
+[v2.9.4](https://github.com/ggaddy/bitcoin_price_tracker/releases/tag/v2.9.4);
+its original planning notes retain their historical state.
+
+---
+
 **Security and performance follow-up — October 11, 2026 UTC**
 
 Scope: deployed v2.9.3; application changes start from master `2245a93`.

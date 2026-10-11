@@ -126,7 +126,19 @@
     el.warnings.replaceChildren(...(warnings.length ? warnings : ["None"]).map(text => node("li", "", text)));
   }
 
-  async function poll(kind) {
+  function receivePrice(data) {
+    validate(data);
+    // An unavailable response cannot erase previously received quotes.
+    if (data.status === "UNAVAILABLE" && lastData?.sources.length) {
+      priceError = "Price service unavailable; retained quotes may be out of date.";
+    } else {
+      lastData = data;
+      receivedAt = performance.now();
+      priceError = "";
+    }
+  }
+
+  async function poll(kind, includePrice = false) {
     const worker = workers[kind];
     if (!running || worker.busy) return;
     clearTimeout(worker.timer);
@@ -136,28 +148,36 @@
     const controller = new AbortController();
     worker.controller = controller;
     const deadline = setTimeout(() => controller.abort(), worker.timeout);
+    let startupPriceDelay = null;
     try {
       const response = await fetch(kind === "price" ? "/api/price" : "/api/presence", kind === "price"
         ? { signal: controller.signal, cache: "no-store" }
-        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, active: true }), signal: controller.signal });
+        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, active: true, ...(includePrice ? { include_price: true } : {}) }), signal: controller.signal });
       if (kind === "presence") {
         if (!response.ok) throw new Error("Heartbeat rejected");
         // Consume the body within the same deadline so slow bodies cannot leak requests.
-        await response.text();
-        if (running && owner === generation) presenceError = "";
+        const body = await response.text();
+        if (running && owner === generation) {
+          presenceError = "";
+          if (includePrice) {
+            // Older servers omit price; fall back to the normal bounded GET.
+            const data = JSON.parse(body);
+            if (data.price) {
+              try {
+                receivePrice(data.price);
+                startupPriceDelay = data.price.refreshing === true ? 1000 : 5000;
+              } catch {
+                priceError = "Startup price unavailable. Retrying automatically.";
+              }
+            }
+          }
+        }
       } else {
         if (!response.ok && response.status !== 503) throw new Error("Price request rejected");
         const data = validate(await response.json());
         if (response.status === 503 && data.status !== "UNAVAILABLE") throw new Error("Invalid unavailable response");
         if (running && owner === generation) {
-          // An unavailable response cannot erase previously received quotes.
-          if (data.status === "UNAVAILABLE" && lastData?.sources.length) {
-            priceError = "Price service unavailable; retained quotes may be out of date.";
-          } else {
-            lastData = data;
-            receivedAt = performance.now();
-            priceError = "";
-          }
+          receivePrice(data);
         }
       }
     } catch {
@@ -174,6 +194,7 @@
         worker.timer = setTimeout(() => poll(kind), owner === generation ? 5000 : 0);
       }
     }
+    return startupPriceDelay;
   }
 
   function inactivePresence() {
@@ -194,9 +215,14 @@
     running = true;
     generation++;
     render();
-    // The first heartbeat registers this viewer before its initial price request.
-    // Subsequent heartbeats and prices own independent, nonoverlapping loops.
-    poll("presence").then(() => { if (running && workers.price.timer === null) poll("price"); });
+    const owner = generation;
+    // Registration returns the cached price without a second network round trip.
+    // Subsequent heartbeats and prices keep independent, nonoverlapping loops.
+    poll("presence", true).then(delay => {
+      if (!running || owner !== generation || workers.price.timer !== null) return;
+      if (delay == null) poll("price");
+      else workers.price.timer = setTimeout(() => poll("price"), delay);
+    });
     ageTimer = setInterval(render, 1000);
   }
 

@@ -150,11 +150,25 @@ response use empty source/health arrays and zero fresh coverage, because the
 persisted records could not be read.
 
 `fetched_at_unix` and `fetched_age_seconds` retain their existing snapshot meanings
-and zero/null empty-snapshot values. `refresh_succeeded` still means at least one
-new quote was committed, and can be true with DEGRADED status. It is false for an
-all-failure health-only update. Heartbeat counts, warnings, and refresh skip reasons
-keep their existing types. Older clients that require exact source-object shapes
-must accept the additional metadata fields.
+and zero/null empty-snapshot values. Price requests no longer wait for provider
+I/O: they serve retained quotes and may start one background refresh. `refreshing`
+is a boolean reporting that refresh ownership is reserved/in progress.
+`refresh_succeeded` now describes the latest completed attempt in this process,
+not a synchronous refresh performed by the current request. It means at least one
+new quote was committed, can be true with DEGRADED status, and remains unchanged
+by cached reads. It starts false on process restart, and is false after an
+all-failure health-only update or persistence failure. Quote/health records remain
+durable; safe nonpersisted refresh errors remain visible until the next completed
+attempt. Heartbeat counts, warnings and skip reasons retain their existing types.
+
+Presence requests may add `include_price: true` to an active heartbeat. Only a
+successfully admitted viewer receives the optional `price` response object, using
+the same evaluated price contract. Admission still returns HTTP 200 when the
+nested price status is UNAVAILABLE, or when the database cannot be read; its
+warnings/status report that separately from successful registration. Normal
+heartbeats, inactive beacons and rejected/invalid viewers omit the price object.
+Older requests without the option retain the small `active_viewers` response.
+The dashboard falls back to a price GET if an older server omits the object.
 
 ## Integration checks
 
