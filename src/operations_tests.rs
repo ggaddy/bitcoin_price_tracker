@@ -331,6 +331,154 @@ async fn security_headers_cover_assets_errors_and_overload() {
 }
 
 #[tokio::test]
+async fn news_overload_cannot_consume_asset_capacity() {
+    use tower::ServiceExt;
+    let mut app = TestApp::new().await;
+    app.configure(RuntimeConfig {
+        requests_per_second: 2,
+        concurrency: 1,
+        ..Default::default()
+    });
+    let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let handler_release = release.clone();
+    let handler_entered = entered.clone();
+    let router = Router::new()
+        .route(
+            "/api/news",
+            get(move || {
+                let release = handler_release.clone();
+                let entered = handler_entered.clone();
+                async move {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                    "news"
+                }
+            }),
+        )
+        .route("/", get(|| async { "dashboard" }))
+        .route("/assets/dashboard.js", get(crate::ui::dashboard_js))
+        .layer(axum::middleware::from_fn_with_state(
+            app.state.clone(),
+            crate::limits::limit_requests,
+        ));
+    let request = |path| {
+        axum::http::Request::builder()
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let held = tokio::spawn(router.clone().oneshot(request("/api/news")));
+    entered.acquire().await.unwrap().forget();
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(request("/api/news"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(request("/api/news"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    for path in ["/", "/assets/dashboard.js"] {
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(request(path))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    release.add_permits(1);
+    assert_eq!(held.await.unwrap().unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn embedded_assets_revalidate_get_and_head_without_losing_security_headers() {
+    use tower::ServiceExt;
+    let app = TestApp::new().await;
+    let router = crate::app::router(app.state.clone());
+    let mut tags = Vec::new();
+    for path in [
+        "/assets/dashboard.js",
+        "/assets/dashboard.css",
+        "/assets/cybercore-0.3.0.min.css",
+    ] {
+        let request = |method, tag: Option<&str>| {
+            let mut request = axum::http::Request::builder().method(method).uri(path);
+            if let Some(tag) = tag {
+                request = request.header("if-none-match", tag);
+            }
+            request.body(axum::body::Body::empty()).unwrap()
+        };
+        let response = router
+            .clone()
+            .oneshot(request(Method::GET, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let tag = response.headers()["etag"].to_str().unwrap().to_string();
+        let original = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!original.is_empty());
+        assert!(
+            !tags.contains(&tag),
+            "different embedded content needs a different validator"
+        );
+        tags.push(tag.clone());
+        for matching in [
+            tag.clone(),
+            tag.trim_start_matches("W/").to_string(),
+            format!("\"other\", {tag}"),
+            "*".into(),
+        ] {
+            for method in [Method::GET, Method::HEAD] {
+                let response = router
+                    .clone()
+                    .oneshot(request(method, Some(&matching)))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+                assert_eq!(response.headers()["etag"], tag);
+                assert_eq!(response.headers()["cache-control"], "no-cache");
+                assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+                assert!(response.headers().contains_key("content-security-policy"));
+                assert!(
+                    axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+        let response = router
+            .clone()
+            .oneshot(request(Method::GET, Some("W/\"previous-deployment\"")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["etag"], tag);
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            original
+        );
+    }
+}
+
+#[tokio::test]
 async fn incomplete_headers_release_connection_capacity_before_application_deadline() {
     use crate::lifecycle::ConnectionLimits;
     use tokio::{

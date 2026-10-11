@@ -170,7 +170,42 @@ and API, with no inline script exception. Responses deny framing and content
 type sniffing, suppress referrers, and disable caching for API/health responses.
 
 Kubernetes definitions and their deployment verification belong in the separate
-`kube_lan` repository. Keep Cloudflare Access restricted until the new image is
-released/deployed and the final public path and per-client abuse controls have
-been verified. Node NTP maintains the clock used by containers; the tracker
-requires no NTP network access or capability to change the clock.
+`kube-lan-rke2` repository. The October 11, 2026 dashboard inspection found
+Bitcoin's Access policy `home-cluster-gaddy-it-public` is **Allow Everyone**;
+anonymous CLI 403 responses do not establish an identity allowlist. The tracker
+is treated as public for abuse controls. Node NTP maintains the clock used by
+containers; the tracker requires no NTP network access or capability to change
+the clock.
+
+## Tracker edge policy — verified October 11, 2026 UTC
+
+Cloudflare rules are scoped to `bitcoin.gaddy.it`; they do not change zone-wide
+settings or other applications. Configuration and live observations are also
+recorded in [AUDIT.md](AUDIT.md).
+
+- **Rate limit:** rule `7e89a32606894c9490a48470d9304473`, expression
+  `http.host eq "bitcoin.gaddy.it"`, per IP, 100 requests per 10 seconds;
+  block for 10 seconds. Verified a Cloudflare 429 with `Retry-After: 10` and
+  recovery to 200. Shared NAT users share one budget (about 25 normally polling
+  tabs before asset/news overhead); observe and tune before expanding traffic.
+  [Cloudflare counters](https://developers.cloudflare.com/waf/rate-limiting-rules/)
+  are edge-location scoped and can lag; this is an additional safeguard alongside
+  bounded origin limits, not a distributed-attack or per-user fairness guarantee.
+- **HSTS:** rule `235ef42287bd4136850326db027ec879`, expression
+  `http.host eq "bitcoin.gaddy.it" and ssl`, sets
+  `Strict-Transport-Security: max-age=86400`. The Kubernetes HTTPS route for
+  `bitcoin.k8s.gaddy.it` adds the same header. Initial policy is one day without
+  `includeSubDomains` or preload; confirm continued HTTPS availability before
+  extending it. Verified on successful HTTPS responses; LAN HTTP has no HSTS.
+- **Cache policy:** rule `b27d9d405aee4738a50b1e7b4d24bcb9` matches the public
+  host, uses origin edge cache-control (bypass if absent) and respects origin
+  Browser TTL. This removes the previous four-hour browser override. HTML and
+  assets now return `no-cache`; APIs/health return `no-store` and edge BYPASS.
+  Asset validators are weak, content-derived cache identifiers rather than
+  integrity signatures. Conditional GET/HEAD return 304 when unchanged.
+
+These edge changes are live independently of the application PR. The RSS and
+ETag origin changes and increased 250/second polling budgets require release and
+deployment; v2.9.3 remains deployed. The nominal 1,000-viewer rate arithmetic
+is not a tested throughput guarantee. After rollout, confirm public 304 responses
+and watch rate-limit events, latency, memory and shared-network false positives.

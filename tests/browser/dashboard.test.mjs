@@ -21,7 +21,7 @@ function report(overrides = {}) {
 }
 const unavailable = () => report({ status: 'UNAVAILABLE', stale: true, sources: [], average_price: null, spread: null,
   coverage: { configured_source_count: 4, fresh_source_count: 0, contributing_sources: [] } });
-const json = (route, data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
+const json = (route, data, status = 200, headers = {}) => route.fulfill({ status, headers, contentType: 'application/json', body: JSON.stringify(data) });
 
 before(async () => {
   browser = await chromium.launch({ headless: true });
@@ -395,6 +395,37 @@ test('RSS failure leaves price dashboard working', async t => {
 });
 
 
+test('RSS cold start retries promptly while prices stay available', async t => {
+  let requests = 0;
+  const xml = '<rss><channel><item><title>Fresh headline</title><link>https://news.bitcoin.com/fresh/</link></item></channel></rss>';
+  const { page } = await setup(t, { news: route => ++requests === 1
+    ? json(route, { xml: null, stale: true, refreshing: true }, 503, { 'Retry-After': '2' })
+    : json(route, { xml, stale: false, refreshing: false }) });
+  await text(page, 'feed-status', 'retrying shortly');
+  await text(page, 'status', 'LIVE');
+  await tick(page, 2100);
+  await text(page, 'feed-list', 'Fresh headline');
+  assert.equal(requests, 2);
+  await tick(page, 10000);
+  assert.equal(requests, 2, 'successful refresh returns to five-minute cadence');
+});
+
+test('RSS serves old headlines during refresh and defers retries while hidden', async t => {
+  let requests = 0;
+  const feed = title => `<rss><channel><item><title>${title}</title><link>https://news.bitcoin.com/story/</link></item></channel></rss>`;
+  const { page } = await setup(t, { news: route => ++requests === 1
+    ? json(route, { xml: feed('Cached headline'), stale: true, refreshing: true })
+    : json(route, { xml: feed('Updated headline'), stale: false, refreshing: false }) });
+  await text(page, 'feed-list', 'Cached headline');
+  await text(page, 'feed-status', 'Refreshing cached');
+  await page.evaluate(() => window.changeVisibility(true));
+  await tick(page, 3000);
+  assert.equal(requests, 1);
+  await page.evaluate(() => window.changeVisibility(false));
+  await text(page, 'feed-list', 'Updated headline');
+  assert.equal(requests, 2);
+});
+
 test('RSS scrolls automatically and pauses when requested', async t => {
   const xml = '<rss><channel>' + Array.from({ length: 10 }, (_, i) => `<item><title>Bitcoin headline ${i}</title><link>https://news.bitcoin.com/story-${i}/</link></item>`).join('') + '</channel></rss>';
   const { page } = await setup(t, { news: route => json(route, { xml, stale: false }) });
@@ -417,15 +448,15 @@ test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
     const url = new URL(req.url, 'http://localhost');
     let body, type = 'text/html', cache = 'no-cache';
     if (url.pathname === '/warm') {
-      body = '<link rel="stylesheet" href="/assets/dashboard.css"><script src="/assets/dashboard.js"></script>';
+      body = '<link rel="stylesheet" href="/assets/dashboard.css?v=2.9.2"><script src="/assets/dashboard.js?v=2.9.2"></script>';
     } else if (url.pathname === '/assets/dashboard.js') {
       type = 'text/javascript';
-      body = url.search ? js : 'window.legacyDashboard = true;';
-      cache = url.search ? 'no-cache' : 'public, max-age=31536000';
+      body = url.search && url.searchParams.get('v') !== '2.9.2' ? js : 'window.legacyDashboard = true;';
+      cache = url.search && url.searchParams.get('v') !== '2.9.2' ? 'no-cache' : 'public, max-age=31536000';
     } else if (url.pathname === '/assets/dashboard.css') {
       type = 'text/css';
-      body = url.search ? css : '.feed-window { height: 0px; }';
-      cache = url.search ? 'no-cache' : 'public, max-age=31536000';
+      body = url.search && url.searchParams.get('v') !== '2.9.2' ? css : '.feed-window { height: 0px; }';
+      cache = url.search && url.searchParams.get('v') !== '2.9.2' ? 'no-cache' : 'public, max-age=31536000';
     } else if (url.pathname === '/assets/cybercore-0.3.0.min.css') {
       type = 'text/css'; body = vendor;
     } else if (url.pathname.startsWith('/api/')) {

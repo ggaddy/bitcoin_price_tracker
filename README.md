@@ -217,7 +217,7 @@ See [SECURITY.md](SECURITY.md) for image advisory review and repository rules.
 | `DATABASE_PATH` | `data/bitcoin_prices.db` locally; `/app/data/bitcoin_prices.db` in the image | Writable SQLite path |
 | `BIND_ADDRESS` | `0.0.0.0:3000` | IP address and port 1–65535; IPv6 example `[::1]:3000` |
 | `MAX_VIEWERS` | `1000` | 1–100000 |
-| `REQUESTS_PER_SECOND` | `100` | 1–10000 per request group |
+| `REQUESTS_PER_SECOND` | `250` | 1–10000 per request group |
 | `REQUEST_CONCURRENCY` | `64` | 1–1024 per request group |
 | `MAX_CONNECTIONS` | `128` | 1–4096 remote TCP connections; up to four separate loopback connections |
 | `SHUTDOWN_SECONDS` | `25` | 1–120 |
@@ -228,8 +228,9 @@ Expired viewers are pruned before admission. At viewer capacity, existing
 heartbeats and removals still work; new viewers receive 429 with a safe error and
 `Retry-After: 15`.
 
-Price, presence, and asset requests have independent token buckets and concurrency
-limits, so flooding presence does not consume cached-price capacity. Each bucket
+Price, presence, news, and asset requests have independent token buckets and
+concurrency limits (news concurrency is capped at eight), so flooding presence
+does not consume cached-price capacity. Each bucket
 can burst up to one second's allowance. Health has reserved capacity (10 requests
 per second, four concurrent). Rate exhaustion returns 429; concurrency exhaustion
 returns 503, both with `Retry-After: 1`. Requests have a 20-second application
@@ -238,8 +239,12 @@ keys or trusts forwarded IP headers. The origin accepts HTTP/1 only, with a
 five-second header deadline, 64 headers, a 16 KiB read buffer, a 25-second total
 connection lifetime, and one request per connection. Loopback health probes have
 their own connection slots. Configure TLS and per-client policy at your reverse
-proxy; tune these application-wide budgets
-to the expected audience. Ordinary dashboard retries already handle 429/503.
+proxy; tune these application-wide budgets to the expected audience. At the default
+1,000-viewer cap, five-second polling requires about 200 requests/second in each
+of the price and presence groups; the 250/second default leaves 25% rate headroom.
+This arithmetic is not a tested throughput guarantee, and a shared budget alone
+does not prevent one client from exhausting capacity. Ordinary dashboard retries
+already handle 429/503.
 
 Provider requests require HTTPS, do not follow redirects, and accept at most
 64 KiB per response (including chunked bodies). A rejected response preserves
@@ -338,6 +343,21 @@ removed. Cleanup uses only IDs created by the runner, including failure paths.
 For a manually managed WebDriver with host Cargo, set `WEBDRIVER_URL` and
 `SELENIUM_APP_HOST` and run `cargo test --locked selenium_dashboard_smoke_test -- --ignored`.
 
+## Asset caching
+
+Embedded CSS and JavaScript carry content-derived weak ETags. Conditional GET or
+HEAD with `If-None-Match` returns an empty 304 when unchanged; changed content
+gets a new validator. HTML and assets retain `no-cache` revalidation, and API
+responses retain `no-store`. The edge must respect these origin cache directives.
+
 ## Bitcoin news
 
-Feed activity includes Bitcoin.com RSS headlines, cached by the server for five minutes. Headlines scroll automatically; hover, focus, or use Pause scrolling to read at your own pace. Reduced-motion preferences disable automatic news scrolling by default.
+Feed activity includes Bitcoin.com RSS headlines, cached by the server for five
+minutes. One background refresh runs at a time with
+a 12-second deadline; readers immediately receive cached headlines while it runs.
+Cold starts return 503 with `Retry-After: 2`; the dashboard retries shortly while
+refreshing, then backs off for five minutes after an upstream failure. Failed
+refreshes preserve the previous feed. News has its own request budget so an RSS
+outage does not consume HTML, CSS, or JavaScript handler slots. Headlines scroll
+automatically; hover, focus, or use Pause scrolling to read at your own pace.
+Reduced-motion preferences disable automatic news scrolling by default.
