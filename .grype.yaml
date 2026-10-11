@@ -35,7 +35,7 @@ ignore:
       type: deb
   - vulnerability: CVE-2026-95619
     package:
-      name: libstdc++6
+      name: '^libstdc\+\+6$'
       version: 14.2.0-19
       type: deb
   - vulnerability: CVE-2026-102010
@@ -55,6 +55,6 @@ ignore:
       type: deb
   - vulnerability: CVE-2026-102010
     package:
-      name: libstdc++6
+      name: '^libstdc\+\+6$'
       version: 14.2.0-19
       type: deb
