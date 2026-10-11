@@ -15,7 +15,6 @@ mod storage;
 mod ui;
 mod util;
 
-use app::router;
 use config::{RuntimeConfig, database_path, health_client_builder, upstream_client_builder};
 use state::AppState;
 use std::{process::ExitCode, time::Duration};
@@ -60,7 +59,7 @@ fn main() -> ExitCode {
             ..Default::default()
         };
         let state = AppState::new(client, db_path).with_config(config);
-        lifecycle::serve_until(listener, router(state), lifecycle::shutdown_signal(), grace, connection_limits).await
+        lifecycle::serve_tracker_until(listener, state, lifecycle::shutdown_signal(), grace, connection_limits).await
     });
     // Bound cleanup of any blocking SQLite jobs after the HTTP drain deadline.
     runtime.shutdown_timeout(Duration::from_secs(5));

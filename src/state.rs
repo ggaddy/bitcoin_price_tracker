@@ -2,7 +2,10 @@ use reqwest::Client;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
+    },
     time::Instant,
 };
 use tokio::sync::Mutex;
@@ -27,7 +30,16 @@ pub(crate) struct AppState {
     // acquires viewers, and that guard must never span network or database I/O.
     pub(crate) viewers: Arc<Mutex<HashMap<String, Instant>>>,
     pub(crate) refresh: Arc<Mutex<RefreshCoordinator>>,
+    pub(crate) price_refresh_report: Arc<Mutex<PriceRefreshReport>>,
+    pub(crate) stopping: Arc<AtomicBool>,
     pub(crate) full_refresh_generation: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct PriceRefreshReport {
+    pub(crate) succeeded: bool,
+    // Client-safe failures not already saved in the snapshot (e.g. write failure).
+    pub(crate) errors: Vec<String>,
 }
 
 impl AppState {
@@ -63,6 +75,8 @@ impl AppState {
             clock,
             viewers: Arc::new(Mutex::new(HashMap::new())),
             refresh: Arc::new(Mutex::new(RefreshCoordinator::default())),
+            price_refresh_report: Arc::new(Mutex::new(PriceRefreshReport::default())),
+            stopping: Arc::new(AtomicBool::new(false)),
             full_refresh_generation: Arc::new(AtomicU64::new(0)),
         }
     }

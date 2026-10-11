@@ -68,7 +68,8 @@ async fn rate_limits_have_independent_health_and_presence_capacity_and_do_not_by
         ..RuntimeConfig::default()
     });
     app.presence(true).await;
-    assert_eq!(app.price().await.0, StatusCode::OK);
+    assert_eq!(app.price().await.0, StatusCode::SERVICE_UNAVAILABLE);
+    app.wait_for_refresh().await;
     assert_eq!(app.price().await.0, StatusCode::OK);
     let (status, data) = app.price().await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
@@ -91,11 +92,11 @@ async fn concurrent_refresh_allows_cached_reads_while_overload_is_bounded() {
         ..RuntimeConfig::default()
     });
     app.presence(true).await;
-    app.price().await;
+    app.refresh_and_price().await;
     app.clock.advance(Duration::from_secs(10));
     let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
     let gate = provider.hold_responses();
-    let request = app.price();
+    let request = app.refresh_and_price();
     tokio::pin!(request);
     // Drain permits from the successful initial request, then observe refresh dispatch.
     provider.wait_for_request().await;
@@ -118,7 +119,7 @@ async fn concurrent_refresh_allows_cached_reads_while_overload_is_bounded() {
 }
 
 #[tokio::test]
-async fn exhausted_concurrency_returns_busy_without_new_upstream_calls() {
+async fn background_refresh_does_not_occupy_the_only_request_slot() {
     let mut app = TestApp::new().await;
     app.configure(RuntimeConfig {
         concurrency: 1,
@@ -127,22 +128,117 @@ async fn exhausted_concurrency_returns_busy_without_new_upstream_calls() {
     app.presence(true).await;
     let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
     let gate = provider.hold_responses();
-    let request = app.price();
-    tokio::pin!(request);
-    tokio::select! {
-        _ = provider.wait_for_request() => {},
-        _ = &mut request => panic!("held refresh completed"),
-    }
-    let (status, data) = app.price().await;
+    let (status, first) = app.price().await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(data["error"].as_str().unwrap().contains("busy"));
+    assert_eq!(first["status"], "UNAVAILABLE");
+    provider.wait_for_request().await;
+    for _ in 0..5 {
+        let (status, data) = tokio::time::timeout(Duration::from_secs(1), app.price())
+            .await
+            .expect("request slots are released before upstream work ends");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(data["status"], "UNAVAILABLE");
+        assert_eq!(data["refreshing"], true);
+        assert!(
+            data["error"].is_null(),
+            "cold state is not a concurrency rejection"
+        );
+    }
     assert_eq!(
         app.request(Method::GET, "/health", None).await.0,
         StatusCode::OK
     );
+    app.presence(true).await;
     gate.add_permits(1);
-    assert_eq!(request.await.0, StatusCode::OK);
+    app.wait_for_refresh().await;
+    assert_eq!(app.price().await.0, StatusCode::OK);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn tracker_shutdown_drains_a_background_refresh_after_its_http_response_finishes() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    let release = provider.hold_responses();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop_send, stop_receive) = oneshot::channel();
+    let state = app.state.clone();
+    let server = tokio::spawn(crate::lifecycle::serve_tracker_until(
+        listener,
+        state,
+        async {
+            stop_receive.await.unwrap();
+        },
+        Duration::from_secs(10),
+        crate::lifecycle::ConnectionLimits::default(),
+    ));
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/api/price"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["refreshing"],
+        true
+    );
+    provider.wait_for_request().await;
+    stop_send.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !app.state.stopping.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        !server.is_finished(),
+        "HTTP drain must also wait for the background commit"
+    );
+    release.add_permits(1);
+    assert_eq!(server.await.unwrap(), Ok(()));
+    let stored = crate::storage::load_price_state(app.state.db_path.clone())
+        .await
+        .unwrap();
+    assert_eq!(stored.snapshot.unwrap().sources.len(), 4);
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+    app.clock.advance(Duration::from_secs(10));
+    let (_, stopped) = app.price().await;
+    assert_eq!(stopped["refreshing"], false);
+    assert!(
+        stopped["refresh_skipped_reason"]
+            .as_str()
+            .unwrap()
+            .contains("shutting down")
+    );
+    assert_eq!(app.upstreams.request_counts(), [1; 4]);
+}
+
+#[tokio::test]
+async fn tracker_background_drain_uses_the_existing_shutdown_deadline() {
+    let app = TestApp::new().await;
+    let guard = app.state.refresh.clone().lock_owned().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server = tokio::spawn(crate::lifecycle::serve_tracker_until(
+        listener,
+        app.state.clone(),
+        async {},
+        Duration::from_secs(1),
+        crate::lifecycle::ConnectionLimits::default(),
+    ));
+    while !app.state.stopping.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    assert_eq!(
+        server.await.unwrap(),
+        Err("background price refresh shutdown deadline exceeded".into())
+    );
+    drop(guard);
 }
 
 #[tokio::test]

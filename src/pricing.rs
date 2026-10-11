@@ -1027,14 +1027,14 @@ mod security_tests {
     async fn oversized_provider_payload_preserves_the_stored_quote() {
         let app = TestApp::new().await;
         app.presence(true).await;
-        let (_, original) = app.price().await;
+        let (_, original) = app.refresh_and_price().await;
         let mut response = FixtureResponse::json(serde_json::json!({}));
         response.body = padded_quote(UPSTREAM_BODY_LIMIT + 1);
         app.upstreams
             .provider(UpstreamSource::CoinGecko)
             .set_response(response);
         app.clock.advance(Duration::from_secs(10));
-        let (status, after) = app.price().await;
+        let (status, after) = app.refresh_and_price().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             after["sources"][0]["price_usd"],
