@@ -112,6 +112,17 @@ cargo test --locked
 
 Open `http://localhost:3000` in a visible tab.
 
+Optional compiler caching uses [Kache](https://github.com/kunobi-ninja/kache).
+Install a prebuilt release, or use Rust 1.95 or newer to run
+`cargo install kache --locked --version 1.0.0`, then run `kache init`.
+The tracker continues to use its pinned Rust 1.85.1 toolchain. Use
+`kache doctor` to check setup and `kache stats` to inspect cache hits.
+
+CI uses the official Kache action pinned to a commit and Kache 1.0.0. Rust
+checks and the RustSec scanner have separate GitHub Actions caches, each with
+a 2 GiB local store limit. Cache reports appear in the job summaries. Docker
+builds continue to use the release workflow's Buildx layer cache.
+
 ## Container
 
 The final image runs as UID/GID **10001:10001** on digest-pinned distroless Debian
