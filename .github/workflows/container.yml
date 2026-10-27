@@ -67,7 +67,7 @@ jobs:
         run: python3 scripts/check_image_exceptions.py
 
       - name: Log in to Docker Hub after all checks pass
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           username: agaddy
           password: ${{ secrets.DOCKERHUB_TOKEN }}
