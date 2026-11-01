@@ -167,6 +167,37 @@ review; they do not prove every shared-library or dynamically loaded code path
 safe. SQLite extension loading remains disabled and no arbitrary plugin/SQL
 interface is exposed.
 
+#### November 2026 gettext applicability review
+
+Reviewed on 2026-11-01. Owner: `ggaddy`; tracking: AUD-07 and
+[removal issue #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40).
+The existing **2026-11-10** review deadline remains enforced.
+
+The current image scan additionally reports
+[CVE-2026-84243](https://security-tracker.debian.org/tracker/CVE-2026-84243)
+against `libc6` `2.41-12+deb13u4`. Debian lists no fixed version for trixie
+or unstable. The latest distroless `cc-debian13:nonroot` index checked on
+November 1, `08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1`,
+still contains that libc version, so updating the base cannot currently remove
+this finding.
+
+The advisory concerns gettext loading attacker-controlled message catalogs via
+the `LANGUAGE` environment variable, with a non-C message locale. This HTTP
+service does not accept client-supplied process environment, locale settings,
+or catalog paths. It does not convert HTTP language headers into process
+environment variables, use gettext localization, or run an SSH server.
+The image now sets `LANG=C` and `LC_ALL=C`; runtime verification requires
+`LC_ALL=C` and rejects gettext-family and text-domain imports in the exact
+release executable. The existing native-library checks remain enforced.
+
+`.grype.yaml` adds one applicability exception limited to this CVE, Debian
+`libc6`, and the exact affected version. This retains vulnerable library code;
+the import and locale checks mitigate exposure rather than patching glibc or
+proving that every indirect library path is safe. Remove the exception when a
+supported base fixes/removes the package, and reassess it if localization,
+native dependencies, process-environment handling, or runtime settings change.
+Other findings remain visible and the High/Critical threshold is unchanged.
+
 ## Application containment
 
 Provider requests require HTTPS, never follow redirects, and read at most 64 KiB

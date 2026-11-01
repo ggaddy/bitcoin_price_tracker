@@ -10,7 +10,7 @@ COPY --from=builder --chown=10001:10001 /app/runtime-data /app/data
 COPY --from=builder /app/target/release/bitcoin_price_tracker /usr/local/bin/bitcoin_price_tracker
 USER 10001:10001
 EXPOSE 3000
-ENV RUST_LOG=info DATABASE_PATH=/app/data/bitcoin_prices.db BIND_ADDRESS=0.0.0.0:3000
+ENV RUST_LOG=info DATABASE_PATH=/app/data/bitcoin_prices.db BIND_ADDRESS=0.0.0.0:3000 LANG=C LC_ALL=C
 HEALTHCHECK --interval=30s --timeout=6s --start-period=5s --retries=3 CMD ["bitcoin_price_tracker", "--healthcheck"]
 STOPSIGNAL SIGTERM
 CMD ["bitcoin_price_tracker"]
