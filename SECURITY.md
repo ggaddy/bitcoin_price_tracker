@@ -46,9 +46,20 @@ rules permit creation only by repository admins and prohibit moving/deleting
 `v*` tags, including for admins. Repository settings can still be changed by an
 administrator; secure the maintainer's GitHub account and Docker Hub token.
 
-Rustls is locked to 0.23.45 (with rustls-webpki 0.103.15), fixing
+The September update locked Rustls to 0.23.45 (with rustls-webpki 0.103.15), fixing
 [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
 The audit still fails on every unaccepted advisory.
+
+### November 2026 dependency refresh
+
+The November 1 update locks quinn-proto to 0.11.18, Rustls to 0.23.46,
+rustls-webpki to 0.103.16, and both webpki-roots and webpki-root-certs to
+1.0.10. These versions address RUSTSEC-2026-0338 through RUSTSEC-2026-0342,
+RUSTSEC-2026-0346 through RUSTSEC-2026-0349, and RUSTSEC-2026-0381 through
+RUSTSEC-2026-0383. Tokio is locked to the patched 1.51.6 maintenance release
+for [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html),
+preserving the application's Rust 1.85.1 toolchain. No Rust advisory exceptions
+are added; CI continues to deny all advisory warnings.
 
 ### AUD-07 runtime advisory review
 
