@@ -46,9 +46,20 @@ rules permit creation only by repository admins and prohibit moving/deleting
 `v*` tags, including for admins. Repository settings can still be changed by an
 administrator; secure the maintainer's GitHub account and Docker Hub token.
 
-Rustls is locked to 0.23.45 (with rustls-webpki 0.103.15), fixing
+The September update locked Rustls to 0.23.45 (with rustls-webpki 0.103.15), fixing
 [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
 The audit still fails on every unaccepted advisory.
+
+### November 2026 dependency refresh
+
+The November 1 update locks quinn-proto to 0.11.18, Rustls to 0.23.46,
+rustls-webpki to 0.103.16, and both webpki-roots and webpki-root-certs to
+1.0.10. These versions address RUSTSEC-2026-0338 through RUSTSEC-2026-0342,
+RUSTSEC-2026-0346 through RUSTSEC-2026-0349, and RUSTSEC-2026-0381 through
+RUSTSEC-2026-0383. Tokio is locked to the patched 1.51.6 maintenance release
+for [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html),
+preserving the application's Rust 1.85.1 toolchain. No Rust advisory exceptions
+are added; CI continues to deny all advisory warnings.
 
 ### AUD-07 runtime advisory review
 
@@ -155,6 +166,37 @@ outside libc/libm/libgcc/the loader. These checks support the applicability
 review; they do not prove every shared-library or dynamically loaded code path
 safe. SQLite extension loading remains disabled and no arbitrary plugin/SQL
 interface is exposed.
+
+#### November 2026 gettext applicability review
+
+Reviewed on 2026-11-01. Owner: `ggaddy`; tracking: AUD-07 and
+[removal issue #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40).
+The existing **2026-11-10** review deadline remains enforced.
+
+The current image scan additionally reports
+[CVE-2026-84243](https://security-tracker.debian.org/tracker/CVE-2026-84243)
+against `libc6` `2.41-12+deb13u4`. Debian lists no fixed version for trixie
+or unstable. The latest distroless `cc-debian13:nonroot` index checked on
+November 1, `08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1`,
+still contains that libc version, so updating the base cannot currently remove
+this finding.
+
+The advisory concerns gettext loading attacker-controlled message catalogs via
+the `LANGUAGE` environment variable, with a non-C message locale. This HTTP
+service does not accept client-supplied process environment, locale settings,
+or catalog paths. It does not convert HTTP language headers into process
+environment variables, use gettext localization, or run an SSH server.
+The image now sets `LANG=C` and `LC_ALL=C`; runtime verification requires
+`LC_ALL=C` and rejects gettext-family and text-domain imports in the exact
+release executable. The existing native-library checks remain enforced.
+
+`.grype.yaml` adds one applicability exception limited to this CVE, Debian
+`libc6`, and the exact affected version. This retains vulnerable library code;
+the import and locale checks mitigate exposure rather than patching glibc or
+proving that every indirect library path is safe. Remove the exception when a
+supported base fixes/removes the package, and reassess it if localization,
+native dependencies, process-environment handling, or runtime settings change.
+Other findings remain visible and the High/Critical threshold is unchanged.
 
 ## Application containment
 

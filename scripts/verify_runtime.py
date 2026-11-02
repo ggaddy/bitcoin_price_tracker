@@ -64,6 +64,11 @@ try:
         blocked = {'strfmon', 'strfmon_l', '__strfmon_l',
                    'ns_printrr', 'ns_printrrf', 'fp_nquery',
                    '__ns_printrr', '__ns_printrrf', '__fp_nquery'}
+        # CVE-2026-84243 concerns LANGUAGE-controlled message catalogs. The
+        # applicability review requires the app to remain free of gettext use.
+        blocked |= {prefix + function for prefix in ('', '__') for function in
+                    ('gettext', 'dgettext', 'dcgettext', 'ngettext', 'dngettext',
+                     'dcngettext', 'textdomain', 'bindtextdomain', 'bind_textdomain_codeset')}
         assert not imports & blocked, f'Review AUD-07 exposure: {sorted(imports & blocked)}'
         cpp_imports = {symbol for symbol in imports if symbol.startswith('_Z')}
         assert not cpp_imports, f'Review AUD-07 C++ exposure: {sorted(cpp_imports)}'
@@ -82,6 +87,8 @@ try:
     else:
         raise RuntimeError('Image did not become healthy: ' + command('logs', container).stdout)
     config = json.loads(command('inspect', container).stdout)[0]['Config']
+    image_environment = dict(entry.split('=', 1) for entry in config.get('Env', []) if '=' in entry)
+    assert image_environment.get('LC_ALL') == 'C', 'Review AUD-07 gettext exposure: image must use LC_ALL=C'
     assert config.get('Healthcheck', {}).get('Test'), 'Image lacks HEALTHCHECK metadata; use podman build --format docker'
     user = command('inspect', '--format', '{{.Config.User}}', container).stdout.strip()
     assert user == '10001:10001', user
