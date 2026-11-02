@@ -272,9 +272,11 @@
   let feedPaused = reducedMotion.matches;
   let feedHovered = false;
   let lastFeedXml = null;
-  let feedLoading = false;
+  let feedRunning = false;
+  let feedGeneration = 0;
+  let feedRequest = null;
   let feedNextCheck = 0;
-  let feedTimer;
+  let feedTimer = null;
   let feedBottomSince = 0;
   function updateFeedToggle() {
     feedToggle.textContent = feedPaused ? "Resume scrolling" : "Pause scrolling";
@@ -290,7 +292,7 @@
     feedWindow.addEventListener(event, () => { feedPaused = true; updateFeedToggle(); }, { passive: true });
   }
   setInterval(() => {
-    if (feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")) return;
+    if (!feedRunning || feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")) return;
     if (feedWindow.scrollHeight <= feedWindow.clientHeight) return;
     if (feedWindow.scrollTop + feedWindow.clientHeight >= feedWindow.scrollHeight - 1) {
       if (!feedBottomSince) feedBottomSince = Date.now();
@@ -301,13 +303,30 @@
     }
   }, 50);
 
-  async function refreshFeed() {
-    if (document.hidden || feedLoading || Date.now() < feedNextCheck) return;
+  function scheduleFeed() {
     clearTimeout(feedTimer);
-    feedLoading = true;
+    feedTimer = null;
+    if (feedRunning && !document.hidden && !feedRequest) {
+      feedTimer = setTimeout(refreshFeed, Math.max(0, feedNextCheck - Date.now()));
+    }
+  }
+
+  async function refreshFeed() {
+    if (!feedRunning || document.hidden || feedRequest) return;
+    if (Date.now() < feedNextCheck) { scheduleFeed(); return; }
+    clearTimeout(feedTimer);
+    feedTimer = null;
+    const owner = feedGeneration;
+    const current = () => feedRunning && !document.hidden && owner === feedGeneration;
+    const request = { controller: null, deadline: null };
+    feedRequest = request;
     let retryDelay = 300000;
     try {
-      const response = await fetch("/api/news", { signal: AbortSignal.timeout(15000) });
+      request.controller = new AbortController();
+      request.deadline = setTimeout(() => request.controller.abort(), 15000);
+      const response = await fetch("/api/news", { signal: request.controller.signal });
+      if (!current()) return;
+      if (request.controller.signal.aborted) throw new Error("RSS request timed out");
       const retryAfter = Number(response.headers.get("Retry-After"));
       if ((response.status === 429 || response.status === 503 || response.ok)
           && Number.isFinite(retryAfter) && retryAfter > 0) {
@@ -315,6 +334,8 @@
       }
       if (!response.ok) throw new Error("RSS unavailable");
       const data = await response.json();
+      if (!current()) return;
+      if (request.controller.signal.aborted) throw new Error("RSS request timed out");
       if (data.refreshing) retryDelay = 2000;
       if (typeof data.xml !== "string") throw new Error("Missing RSS");
       if (data.xml !== lastFeedXml) {
@@ -356,17 +377,41 @@
         ? "Bitcoin.com · Cached headlines — refresh temporarily unavailable"
         : "Bitcoin.com · RSS · Updates every 5 minutes";
     } catch {
+      if (!current()) return;
       const retry = retryDelay < 300000 ? "retrying shortly" : "retrying in 5 minutes";
       feedStatus.textContent = lastFeedXml
         ? `Bitcoin.com · Showing previous headlines — ${retry}`
         : `Bitcoin news temporarily unavailable — ${retry}`;
     } finally {
-      feedLoading = false;
-      feedNextCheck = Date.now() + retryDelay;
-      feedTimer = setTimeout(refreshFeed, retryDelay);
+      clearTimeout(request.deadline);
+      feedRequest = null;
+      // A cancelled visibility period must not replace the current retry time.
+      if (current()) feedNextCheck = Date.now() + retryDelay;
+      scheduleFeed();
     }
   }
-  refreshFeed();
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFeed(); });
+
+  function startFeed() {
+    if (feedRunning || document.hidden) return;
+    feedRunning = true;
+    feedGeneration++;
+    refreshFeed();
+  }
+
+  function stopFeed() {
+    if (!feedRunning) return;
+    feedRunning = false;
+    feedGeneration++;
+    clearTimeout(feedTimer);
+    feedTimer = null;
+    clearTimeout(feedRequest?.deadline);
+    // Retain ownership until settlement so rapid restarts cannot overlap work.
+    feedRequest?.controller?.abort();
+  }
+
+  document.addEventListener("visibilitychange", () => document.hidden ? stopFeed() : startFeed());
+  window.addEventListener("pagehide", stopFeed);
+  window.addEventListener("pageshow", startFeed);
+  startFeed();
 
 })();
