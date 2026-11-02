@@ -1,4 +1,11 @@
-# Security audit and remediation
+# September 2026 security audit and remediation
+
+This is an archived report of the September 2026 review and v2.7.0 remediation.
+Findings, validation counts, deployment observations, and review deadlines below
+are historical evidence. They do not establish current scan results, current
+GitHub/edge settings, or the deployed image. Follow [SECURITY.md](SECURITY.md) and
+[.grype.yaml](.grype.yaml) for the checked-in advisory policy and enforced deadline;
+current follow-up work lives in Beads (`bd ready`).
 
 The September 2026 audit reviewed application commit
 `87ddf1215fa4be1efc5fd9b004493006ba66c4c5`, its container, release automation,

@@ -1,3 +1,25 @@
+# Archived audit and implementation history
+
+This document preserves September–October 2026 audit findings, implementation
+notes, test counts, and operational observations. **It is archived, not a current
+work tracker.** Checkboxes, phase statuses, source line references, “uncommitted”
+claims, and next checkpoints below describe their original sessions. Historical
+instructions to update this tracker are superseded by the Beads workflow.
+
+Use [README.md](README.md) for current setup/operations, the
+[source contract](docs/source-contract.md) for API behavior, and
+[SECURITY.md](SECURITY.md) for the checked-in security policy and review deadline.
+Use `bd ready` and `bd show <id>` for current work. The unfinished L3 asset-caching
+proposal is preserved in `bitcoin_price_tracker-f14`; consult Beads for its status.
+
+The loading changes were committed in `b8109d3` (v2.9.5); the RSS/ETag follow-up
+was committed in `3660a9f` (v2.9.4). Their historical pending-merge/CI statements
+below are superseded. Git tags, image publication, GitHub Release records, and
+production deployment are separate events. This archive does not establish the
+currently deployed version or current public-edge behavior.
+
+---
+
 **Client loading improvements — October 11, 2026 UTC**
 
 Baseline: deployed v2.9.4 (`3660a9f`). Browser sampling found the first price at

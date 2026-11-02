@@ -1,152 +1,92 @@
 # Bitcoin Price Tracker
 
-Rust BTC/USD tracker with a responsive Cybercore dashboard.
+A Rust/Axum BTC/USD tracker with a Cybercore dashboard, four price providers,
+local SQLite persistence, and a non-root container image. Dashboard assets are
+embedded in the binary; there is no frontend build step or runtime CDN dependency.
+[Cybercore CSS](https://github.com/sebyx07/cybercore-css/) 0.3.0 and its MIT license
+are vendored in `src/vendor`.
 
-The UI uses [Cybercore CSS](https://github.com/sebyx07/cybercore-css/) 0.3.0.
-Its stylesheet and MIT license are vendored in `src/vendor` and embedded in the
-binary, so styling works without a CDN or a frontend build step.
+## Quick start
 
-## Behavior
-
-- Uses CoinGecko, Coinbase, Kraken, and Gemini
-- Stores prices in local SQLite
-- Serves the latest stored snapshot to the UI
-- Refreshes only while a visible tab is active
-- Tracks viewer heartbeats with monotonic time: viewers remain active through 15 seconds and expire immediately after that, independent of system clock adjustments
-- Rotates upstream checks one source at a time, advancing after failed attempts too
-- Skips refreshes when the latest snapshot is under 10 seconds old or the previous attempt started less than 10 seconds ago
-- Backs off failed providers for 10, 20, 40, 80, 160, then 300 seconds; successful provider recovery resets the delay
-- Honors longer valid `Retry-After` delays or HTTP dates, skipping cooling-down providers while others continue
-- Immediately serves stored prices while one background task refreshes; all cold-start price requests receive 503 until a snapshot is available
-- Requests a full refresh when the first viewer becomes active, preserving new activations that arrive during a refresh
-- Limits upstream connections to 2 seconds and complete requests, including response bodies, to 5 seconds
-- Requires finite, positive prices; merges successful provider results with retained quotes when other providers fail
-- Explicitly requests Coinbase BTC-USD, checks reported pair identifiers, and rejects Kraken API errors even with HTTP 200
-- Leaves the stored snapshot unchanged if every provider fails or the database write fails
-- Persists each provider's last successful observation time and quote kind, preserving both when another provider refreshes or that provider fails
-- Saves provider outcomes and successful quotes in one transaction; all-provider failure saves health without advancing quote timestamps
-
-The API's `refreshing` reports background refresh activity. `refresh_succeeded`
-describes the latest completed attempt in this process: true when at least one
-new quote was saved, including partial refreshes, and false before any completed
-attempt or after a health-only failure/write failure. Cached reads do not reset
-it. Partial snapshots include a warning for each failed provider. Failed refreshes
-retain quotes and report safe errors on subsequent reads; completed provider
-outcomes are saved independently. Any persistence failure rolls back both quotes
-and health. Snapshot timestamps describe persistence; response aggregates are
-recomputed from qualifying source observations on every request.
-
-The API now includes `provider_health` for all configured providers, including
-those without a quote. Each record contains the provider `source` and a
-`last_attempt` outcome (`unknown`, `success`, or `failure`), with the attempt's
-Unix start time and a safe error for failures. Health survives restarts and is
-read consistently with quotes. Each source exposes its observation time, quote kind, age, and freshness.
-Only configured providers with finite positive quotes aged less than 90 seconds
-contribute to the average and spread; unknown, future, and expired observations
-remain visible but do not contribute. With no contributors, both aggregates are null.
-`coverage` reports configured/fresh counts and contributor names.
-
-`status` is `LIVE` when all four providers are fresh with successful health,
-`DEGRADED` when some quotes qualify but coverage or health is incomplete,
-`STALE` when valid retained quotes exist but none qualify, and `UNAVAILABLE`
-when no valid quote exists. A refresh persistence error also degrades LIVE.
-The compatibility `stale` flag is true for every status except LIVE. HTTP status
-remains 200 for retained valid quotes, 503 without valid quotes, or 500 for a
-database read failure.
-See [the P3 source contract](docs/source-contract.md) for the complete field definitions.
-
-The displayed value is an indicative average: it combines Coinbase spot,
-Gemini bid, Kraken last-trade, and CoinGecko aggregate quotes. Invalid prices
-are rejected by provider adapters and the storage writer; invalid retained rows
-are excluded when merging a new snapshot.
-
-Startup now migrates unversioned SQLite databases to schema version 1 atomically.
-It preserves the latest quotes, adds nullable observation times and quote kinds,
-and initializes independent provider health as unknown. Legacy observation times
-are never inferred from snapshot time. Repeated startup preserves the metadata;
-migration failure rolls back all schema/data changes, and unsupported schema
-versions stop startup. Successful refreshes now replace unknown legacy
-observation times with actual per-provider completion times.
-
-Retry delays start when the batch completes and use monotonic deadlines. Invalid or
-unrepresentably large retry hints fall back to exponential backoff. When every
-provider is cooling down, requests serve stored data without consuming another
-attempt. Retry state is process-local and resets on restart; the persisted
-snapshot still supplies the ten-second success-age gate.
-
-Presence is rechecked after reading the snapshot and before dispatching providers.
-Already dispatched work may finish and save prices after the last viewer leaves;
-the response reports the current viewer count. Future snapshot timestamps have
-unknown age (`fetched_age_seconds: null`) and are treated as stale, while the
-monotonic attempt gate still prevents rapid retries.
-
-## Dashboard behavior
-
-Each page creates a fresh in-memory presence ID, so opened or duplicated tabs
-cannot inherit another tab's identity. Browser storage is not required. UUID
-support falls back to secure random bytes; missing random/request capabilities
-produce an explicit Unsupported state.
-
-Visible pages run independent presence and price loops, waiting five seconds
-between completed requests. Presence has a three-second deadline and prices an
-eight-second deadline, including response bodies. Hidden pages cancel requests,
-stop timers, and send inactive presence; returning resumes one set of loops.
-Failures retry automatically and retain received quotes with an age warning.
-
-The first active heartbeat opts into `include_price: true`. After viewer admission,
-its HTTP 200 response includes a `price` object evaluated from the stored snapshot,
-even if that object's status is UNAVAILABLE on cold start. The browser renders it
-without an initial price GET, then checks again after one second if a background
-refresh is running, or five seconds otherwise. Later heartbeats omit the option.
-If an older server omits the snapshot or startup fails, the bounded price GET
-remains a fallback. All price reads return without waiting for providers; admitted
-startup requests and ordinary price reads share the same single refresh owner,
-attempt cadence and provider backoff. Shutdown prevents new refreshes and drains
-dispatched price work through its database commit within the existing grace period.
-
-Source cards show quote kind, elapsed seconds, and the latest provider error,
-including providers without quotes. Coverage and indicative aggregates update
-as quotes expire between responses; unknown/future quotes never become fresh
-locally. Last price update uses source observation times. Status transitions
-are announced politely, and decorative CSS animation pauses while hidden and
-respects reduced-motion preferences.
-
-## Local
-
-Install Rust with rustup, then run:
+Install Rust with rustup, then run from the repository root:
 
 ```bash
 cargo run --locked
 ```
 
-`rust-toolchain.toml` pins Rust 1.85.1 with rustfmt and Clippy; `Cargo.toml`
-declares the same minimum version. Tokio's runtime, I/O, signal, synchronization,
-and timer features are explicit. Development checks use locked dependencies:
+Open `http://localhost:3000` in a visible tab. The repository pins Rust 1.85.1 in
+[rust-toolchain.toml](rust-toolchain.toml); rustup selects that toolchain.
+Prices are stored at `data/bitcoin_prices.db` by default.
 
-```bash
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
+A visible dashboard sends viewer heartbeats and activates price refreshes.
+An empty database is healthy, but `/api/price` returns HTTP 503 with
+`UNAVAILABLE` until a refresh saves a valid quote. Reads return stored data
+without waiting for upstream providers.
 
-Open `http://localhost:3000` in a visible tab.
+See [container setup](#container), [configuration](#configuration-and-limits),
+[API examples](#api-examples), [development checks](#development-and-tests), and
+[release publishing](#releases).
 
-Optional compiler caching uses [Kache](https://github.com/kunobi-ninja/kache).
-Install a prebuilt release, or use Rust 1.95 or newer to run
-`cargo install kache --locked --version 1.0.0`, then run `kache init`.
-The tracker continues to use its pinned Rust 1.85.1 toolchain. Use
-`kache doctor` to check setup and `kache stats` to inspect cache hits.
+## Behavior
 
-CI uses the official Kache action pinned to a commit and Kache 1.0.0. Rust
-checks and the RustSec scanner have separate GitHub Actions caches, each with
-a 2 GiB local store limit. Cache reports appear in the job summaries. Docker
-builds continue to use the release workflow's Buildx layer cache.
+- CoinGecko aggregate, Coinbase spot, Kraken last-trade, and Gemini bid quotes
+  contribute to an **indicative average**, rather than a single exchange price.
+- SQLite retains the latest merged snapshot and each provider's latest health.
+  Partial refreshes keep other providers' last valid quotes; failed writes roll
+  back both quote and health changes. This is not a historical price database.
+- Admitted viewer heartbeats drive price refreshes. Viewers expire just after
+  15 seconds without a heartbeat. Price reads recheck presence before dispatch;
+  already dispatched work may finish after the last viewer leaves.
+- One background price refresh runs at a time. The latest snapshot's age and
+  time since the previous attempt each enforce a ten-second gate. Initial viewer
+  activation requests a full refresh; ordinary refreshes rotate providers,
+  advancing after failed attempts too.
+- Failed providers back off for 10, 20, 40, 80, 160, then 300 seconds. Longer valid
+  `Retry-After` hints extend the delay. Healthy providers continue while others
+  cool down. These retry deadlines and viewer presence are process-local.
+- Price-provider connections have a two-second deadline; complete requests,
+  including bodies, have a five-second deadline. HTTPS is required, redirects
+  are disabled, and responses are limited to 64 KiB. Prices must be finite and
+  positive.
+- Only configured providers' observations aged less than 90 seconds contribute
+  to aggregates. Unknown, future, and expired observations remain visible with
+  their ages. No contributors means a null average and spread.
+
+The dashboard reports `LIVE`, `DEGRADED`, `STALE`, or `UNAVAILABLE`, shows provider
+errors, and updates quote ages between responses. Each tab creates its own
+in-memory presence ID without browser storage. Visible tabs run independent
+presence and price loops five seconds after each request finishes, with
+three-second and eight-second request deadlines respectively. Hiding the page
+cancels those loops and sends inactive presence; returning resumes them.
+The initial heartbeat requests a cached price with `include_price: true`,
+avoiding an extra initial price GET when supported. Transient errors retain
+received quotes and retry automatically. Decorative motion pauses while hidden
+and respects reduced-motion preferences.
+
+See the [source and price API contract](docs/source-contract.md) for field
+semantics, freshness boundaries, migration, and background-refresh behavior.
+
+### News and asset caching
+
+Bitcoin.com RSS headlines are cached in memory for five minutes. One background
+refresh runs with a 12-second deadline while readers receive cached headlines.
+Cold starts return 503 with `Retry-After: 2`; failed refreshes retain cached
+headlines and use a five-minute backoff. News has its own request budget.
+Headline scrolling pauses on hover, focus, or the pause control; reduced motion
+disables automatic scrolling by default.
+
+HTML and embedded assets use `no-cache` revalidation. CSS and JavaScript have
+content-derived weak ETags; matching conditional GET/HEAD requests return an
+empty 304. API and health responses use `no-store`. The reverse proxy must
+respect these directives. Immutable, content-hashed asset URLs remain deferred
+in Beads issue `bitcoin_price_tracker-f14`; current query-version URLs must
+continue to revalidate.
 
 ## Container
 
 The final image runs as UID/GID **10001:10001** on digest-pinned distroless Debian
-13, without a shell, package manager, or Rust build tools.
-A named volume is initialized with a writable data directory:
+13, without a shell, package manager, or Rust build tools. A named volume is
+initialized with a writable data directory:
 
 ```bash
 docker build -t btc-matrix .
@@ -154,13 +94,18 @@ docker volume create btc-data
 docker run -d --name btc-tracker -p 3000:3000 -v btc-data:/app/data \
   --read-only --cap-drop ALL --security-opt no-new-privileges btc-matrix
 docker exec btc-tracker bitcoin_price_tracker --healthcheck
+```
+
+Open `http://localhost:3000`. To stop the container gracefully:
+
+```bash
 docker stop --time 35 btc-tracker
 ```
 
 For an existing bind mount, stop the previous instance and back up its database
-before migration. The container user must own the directory and database, because
+before migration. The container user must own the directory and database because
 SQLite also creates journal files there. Prepare permissions within the engine's
-user namespace (this also works with rootless Podman):
+user namespace (also suitable for rootless Podman):
 
 ```bash
 mkdir -p data
@@ -171,63 +116,28 @@ docker run -d --name btc-tracker -p 3000:3000 -v "$PWD/data:/app/data" \
   --read-only --cap-drop ALL --security-opt no-new-privileges btc-matrix
 ```
 
-For Podman, build with `podman build --format docker -t btc-matrix .` to preserve
-HEALTHCHECK metadata; then use `podman` in place of `docker` in run commands.
-On SELinux hosts, use an appropriate
-volume label such as `:Z`. Do not run multiple instances against the same SQLite
-file: viewer presence, rate limits, refresh ownership, and retry scheduling are
-process-local. Use a single application instance behind your reverse proxy.
+Use either volume example with an unused container name. For Podman, build with
+`podman build --format docker -t btc-matrix .` to preserve HEALTHCHECK metadata,
+then use `podman` in place of `docker` in the run commands. On SELinux hosts,
+use an appropriate volume label such as `:Z`.
 
-SIGINT/SIGTERM stops accepting new work and drains active requests for up to
-`SHUTDOWN_SECONDS`, followed by up to five seconds for blocking SQLite cleanup.
-A drain timeout exits unsuccessfully and is logged. Configure your orchestrator's
-termination grace longer than this total; 35 seconds covers the defaults.
+Run **one application instance per SQLite database** behind your reverse proxy.
+Viewer presence, request budgets, refresh ownership, and retry scheduling are
+process-local. Startup atomically migrates unversioned databases to schema
+version 1; unsupported versions stop startup. Back up data before upgrades;
+see the [migration contract](docs/source-contract.md#schema-migration).
 
-`GET /health` reports only local database readability, with 200 `{"status":"ok"}`
-or 503 `{"status":"unavailable"}`. It works with an empty initialized database,
-never activates viewers or fetches upstream prices, and does not create a missing
-database. The image's health probe calls this endpoint using the application
+SIGINT/SIGTERM stops accepting new work and drains HTTP requests and dispatched
+price refreshes within `SHUTDOWN_SECONDS`, followed by up to five seconds for
+blocking SQLite cleanup. A drain timeout exits unsuccessfully and is logged.
+Set the orchestrator's termination grace longer than this total; 35 seconds
+covers the defaults.
+
+`GET /health` checks local database readability without activating viewers or
+calling providers. It returns 200 `{"status":"ok"}` for an initialized empty
+database or 503 `{"status":"unavailable"}` on a read failure; it does not create
+a missing database. The image probes this endpoint using its own application
 binary, with no curl or shell dependency.
-
-### Runtime verification
-
-```bash
-python3 scripts/verify_runtime.py --engine docker --image btc-matrix
-```
-
-This creates unique disposable containers and a named volume, verifies non-root
-startup, custom bind configuration, empty-data health, seeded quote serving,
-pause/resume, restart persistence, unhealthy storage, probe recovery, and graceful
-shutdown, and removes only its own resources. A pinned Python helper image drives
-HTTP/SQLite checks. The application has no external network during these checks;
-no public provider access is possible.
-
-### Container CI and releases
-
-CI builds, verifies and scans the final runtime image on pull requests and master
-pushes. PR builds do not log in to Docker Hub or push images. Release tags rerun
-the Rust/browser/advisory checks for the exact commit, then verify and scan the
-candidate image before publishing that same image without rebuilding it.
-
-To enable publishing, add a repository Actions secret named `DOCKERHUB_TOKEN`
-containing a Docker Hub access token for `agaddy` with write access to
-`agaddy/bitcoin_price_tracker`.
-
-Merge through a passing pull request, then tag the current `master` commit using
-the existing stable `vMAJOR.MINOR.PATCH` format. Only repository admins may create
-release tags; existing release tags cannot be moved or deleted:
-
-```bash
-git tag v2.7.0
-git push origin v2.7.0
-```
-
-This builds and pushes `agaddy/bitcoin_price_tracker:2.7.0` and
-`agaddy/bitcoin_price_tracker:latest`. Each published release updates `latest`,
-and publication requires the tag to match current `master`. Branch pushes and
-prerelease tags do not publish images. The workflow must be present in the tagged
-commit. Weekly checks scan the published digest as well as the current source.
-See [SECURITY.md](SECURITY.md) for image advisory review and repository rules.
 
 ## Configuration and limits
 
@@ -242,87 +152,82 @@ See [SECURITY.md](SECURITY.md) for image advisory review and repository rules.
 | `SHUTDOWN_SECONDS` | `25` | 1–120 |
 | `RUST_LOG` | `bitcoin_price_tracker=info` locally; `info` in image | tracing filter |
 
-Invalid numeric/bind settings cause startup to fail with the setting's name.
-Expired viewers are pruned before admission. At viewer capacity, existing
-heartbeats and removals still work; new viewers receive 429 with a safe error and
-`Retry-After: 15`.
+Invalid numeric/bind settings fail startup with the setting's name. Expired
+viewers are pruned before admission. At capacity, existing heartbeats and removals
+still work; new viewers receive 429 with `Retry-After: 15`.
 
-Price, presence, news, and asset requests have independent token buckets and
-concurrency limits (news concurrency is capped at eight), so flooding presence
-does not consume cached-price capacity. Each bucket
-can burst up to one second's allowance. Health has reserved capacity (10 requests
-per second, four concurrent). Rate exhaustion returns 429; concurrency exhaustion
-returns 503, both with `Retry-After: 1`. Requests have a 20-second application
-deadline, and presence JSON is limited to 1024 bytes. No limiter stores client/IP
-keys or trusts forwarded IP headers. The origin accepts HTTP/1 only, with a
-five-second header deadline, 64 headers, a 16 KiB read buffer, a 25-second total
-connection lifetime, and one request per connection. Loopback health probes have
-their own connection slots. Configure TLS and per-client policy at your reverse
-proxy; tune these application-wide budgets to the expected audience. At the default
-1,000-viewer cap, five-second polling requires about 200 requests/second in each
-of the price and presence groups; the 250/second default leaves 25% rate headroom.
-This arithmetic is not a tested throughput guarantee, and a shared budget alone
-does not prevent one client from exhausting capacity. Ordinary dashboard retries
-already handle 429/503.
+Price, presence, news, and assets have independent token buckets and concurrency
+limits. News concurrency is capped at eight; health reserves 10 requests per
+second and four concurrent handlers. Buckets can burst up to one second's
+allowance. Rate exhaustion returns 429; concurrency exhaustion returns 503,
+both with `Retry-After: 1`. Application requests have a 20-second deadline and
+presence JSON is limited to 1024 bytes.
 
-Provider requests require HTTPS, do not follow redirects, and accept at most
-64 KiB per response (including chunked bodies). A rejected response preserves
-the last stored quote. Dashboard responses enforce CSP, framing and content-type
-restrictions; API and health responses are not cacheable.
+The origin accepts HTTP/1 only, with a five-second header deadline, 64 headers,
+a 16 KiB read buffer, a 25-second total connection lifetime, and one request per
+connection. Loopback probes use separate connection slots. No limiter trusts
+forwarded IP headers or maintains per-client keys. Configure TLS and per-client
+abuse controls at your reverse proxy.
 
-Timestamps use the host clock. Kubernetes nodes need working NTP synchronization;
-the container needs no NTP egress or clock-setting capability. All Kubernetes
-definitions and rollout verification are maintained in the separate `kube_lan`
-repository.
+At 1,000 tabs, five-second polling nominally needs about 200 requests/second in
+each of the price and presence groups; 250/second leaves 25% rate headroom.
+This is arithmetic, not measured sustainable capacity. Beads issue
+`bitcoin_price_tracker-4mr` tracks load testing. Shared origin budgets alone do
+not guarantee client fairness.
 
-Info logs report provider outcome/duration and startup/shutdown. Debug logs add
-refresh decisions, coverage, and overload decisions. Raw viewer IDs are not logged;
-database/transport diagnostic details remain server-side.
+Info logs report provider outcome/duration and startup/shutdown; debug logs add
+refresh, coverage, and overload decisions. Raw viewer IDs are not logged.
+Timestamps use the host clock; nodes need working time synchronization, but the
+container needs no NTP egress or clock-setting capability. Kubernetes definitions
+and rollout evidence belong in the separate `ggaddy/kube-lan-rke2` repository.
 
-### API examples
+## API examples
+
+With the app running locally:
 
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/api/price
 curl -X POST http://localhost:3000/api/presence -H 'Content-Type: application/json' \
-  -d '{"session_id":"example-tab","active":true}'
+  -d '{"session_id":"example-tab","active":true,"include_price":true}'
+curl -X POST http://localhost:3000/api/presence -H 'Content-Type: application/json' \
+  -d '{"session_id":"example-tab","active":false}'
 ```
 
-An empty database is healthy but returns HTTP 503/UNAVAILABLE for prices until a
-viewer activates a successful refresh. Source timestamps remain unchanged on
-provider failure, and expired quotes remain visible with nullable aggregates;
-see [the source contract](docs/source-contract.md).
+The active example admits a viewer and returns an evaluated cached `price` object
+while a refresh may run in the background. A single heartbeat expires after
+15 seconds; it is not a persistent subscription. The inactive example removes it.
+See the [API contract](docs/source-contract.md) for response fields and errors.
 
 ### Troubleshooting
 
-- Startup SQLite permission errors: check ownership of both the mounted directory
-  and existing database as UID/GID 10001:10001. Stop the old process before changing
-  ownership or restoring a backup.
-- Unhealthy container: inspect application logs and run `bitcoin_price_tracker
-  --healthcheck` inside it; check database readability and the configured bind port.
-- 429 or busy 503 responses: review request/viewer budgets and proxy traffic;
-  capacity limits do not change the upstream refresh cooldown.
-- No upstream updates: a visible dashboard must send presence. Check provider
-  health/error fields and client connectivity before treating this as a database
-  failure. STALE prices can coexist with a healthy local database.
+- SQLite permission errors: check ownership of both the mounted directory and
+  database as UID/GID 10001:10001. Stop the process before changing ownership or
+  restoring a backup.
+- Unhealthy container: inspect logs and run `bitcoin_price_tracker --healthcheck`
+  inside it; check database readability and the configured bind port.
+- 429 or busy 503: review viewer/request budgets and proxy traffic. These limits
+  do not bypass upstream cooldowns; normal dashboard retries handle them.
+- No price updates: a visible dashboard must send presence. Check provider health
+  and client connectivity. STALE prices can coexist with a healthy database.
 - Unsupported schema version: use a compatible application version; startup does
-  not silently rewrite a newer database. Keep backups when upgrading.
+  not silently rewrite a newer database.
 
-## Continuous integration
+## Development and tests
 
-`.github/workflows/ci.yml` runs Rust formatting, Clippy, locked tests, deterministic
-Chromium tests, a final-image build/runtime smoke check, and Rust/npm advisory
-scans on pull requests and master pushes. It also runs weekly and supports manual
-dispatch. Actions are pinned to commit SHAs with read-only repository permissions.
-Release container publishing remains in `container.yml`.
+Run from the repository root. Rust 1.85.1, rustfmt, and Clippy are pinned by
+[rust-toolchain.toml](rust-toolchain.toml); Cargo declares the same minimum Rust
+version. Use locked dependencies:
 
-See [SECURITY.md](SECURITY.md) for scanner versions and the required process for
-any advisory exception. There are no accepted advisories.
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+```
 
-## Browser tests
+### Browser tests
 
-The deterministic dashboard suite uses pinned Playwright/Chromium and Node.js
-20 or newer. Install once, then run from the repository root:
+The deterministic suite requires Node.js 20 or newer and pinned Playwright:
 
 ```bash
 npm ci --prefix tests/browser
@@ -330,53 +235,112 @@ npm exec --prefix tests/browser -- playwright install chromium
 npm test --prefix tests/browser
 ```
 
-On a Linux host missing browser system libraries, use Playwright's
-`install --with-deps chromium` command. Tests serve the actual dashboard assets
-locally, intercept every API request with fixtures, and reject external requests.
-The suite covers freshness, recovery, request deadlines, visibility changes,
-identity fallbacks, safe rendering, reduced motion, and narrow layouts.
+On Linux hosts missing browser system libraries, install Chromium with
+`npm exec --prefix tests/browser -- playwright install --with-deps chromium`.
+Tests serve actual dashboard assets locally, mock API requests, and reject
+external requests. Coverage includes freshness, recovery, deadlines, visibility,
+identity fallbacks, safe rendering, reduced motion, RSS, and narrow layouts.
 
-To verify the embedded assets from a running local Rust app instead of the test
-asset server, use `BTC_APP_URL=http://127.0.0.1:3000 npm test --prefix tests/browser`.
-API requests remain mocked. Optional `BTC_SCREENSHOT_DIR=/existing/directory`
-writes desktop and narrow-layout screenshots.
+To test embedded assets from a running Rust app, use
+`BTC_APP_URL=http://127.0.0.1:3000 npm test --prefix tests/browser`; APIs remain
+mocked. Optional `BTC_SCREENSHOT_DIR=/existing/directory` writes desktop and
+narrow-layout screenshots.
 
-The separate Rust Selenium smoke test uses local providers and a manual clock:
+### Container verification and Selenium
+
+With Docker or Podman, Python 3, and host `readelf` (from binutils), verify an
+already built image:
+
+```bash
+python3 scripts/verify_runtime.py --engine docker --image btc-matrix
+```
+
+The script uses disposable containers/volumes and a version-tagged Python helper
+image. It checks exact-image native imports, locale guards, non-root startup,
+health, seeded quotes, restart persistence, storage failure/recovery, bind mounts,
+and shutdown. The application has no external network during these checks; the
+helper image is pulled before readiness checks. Cleanup removes its own resources.
+
+The separate Rust Selenium smoke test needs Docker or Podman and Python 3,
+but no host Cargo:
 
 ```bash
 scripts/run_selenium_smoke_test.sh
 ```
 
-The runner needs Docker or Podman and Python 3, but no host Cargo. It starts
-`selenium/standalone-chrome:4.48.0-20260905`, waits for readiness on an ephemeral
-loopback port, and runs the test in the pinned Rust container sharing Selenium's
-network namespace. This keeps app and WebDriver traffic on loopback without host
-networking or host-name assumptions. The engine must support
-`--network container:<id>` and bind mounts (Linux engines, including those in WSL).
-The workspace is mounted for Cargo build artifacts; no test database is retained.
-
+The runner uses version-tagged Selenium and Rust images, an ephemeral loopback
+WebDriver port, and a shared container network namespace. It requires bind mounts
+and `--network container:<id>` support (Linux engines, including WSL). The
+workspace is mounted for build artifacts; no test database is retained.
 Overrides: `CONTAINER_ENGINE`, `SELENIUM_IMAGE`, `SELENIUM_CONTAINER_NAME`,
-`SELENIUM_WAIT_SECONDS` (1–300), and `RUST_TEST_IMAGE`. The default container name
-is unique. A supplied conflicting name is rejected; existing containers are never
-removed. Cleanup uses only IDs created by the runner, including failure paths.
-For a manually managed WebDriver with host Cargo, set `WEBDRIVER_URL` and
-`SELENIUM_APP_HOST` and run `cargo test --locked selenium_dashboard_smoke_test -- --ignored`.
+`SELENIUM_WAIT_SECONDS` (1–300), and `RUST_TEST_IMAGE`. A supplied conflicting
+container name is rejected; cleanup uses only created container IDs.
 
-## Asset caching
+For a manually managed WebDriver and host Cargo, set `WEBDRIVER_URL` and
+`SELENIUM_APP_HOST`, then run:
 
-Embedded CSS and JavaScript carry content-derived weak ETags. Conditional GET or
-HEAD with `If-None-Match` returns an empty 304 when unchanged; changed content
-gets a new validator. HTML and assets retain `no-cache` revalidation, and API
-responses retain `no-store`. The edge must respect these origin cache directives.
+```bash
+cargo test --locked selenium_dashboard_smoke_test -- --ignored
+```
 
-## Bitcoin news
+### Optional compiler cache
 
-Feed activity includes Bitcoin.com RSS headlines, cached by the server for five
-minutes. One background refresh runs at a time with
-a 12-second deadline; readers immediately receive cached headlines while it runs.
-Cold starts return 503 with `Retry-After: 2`; the dashboard retries shortly while
-refreshing, then backs off for five minutes after an upstream failure. Failed
-refreshes preserve the previous feed. News has its own request budget so an RSS
-outage does not consume HTML, CSS, or JavaScript handler slots. Headlines scroll
-automatically; hover, focus, or use Pause scrolling to read at your own pace.
-Reduced-motion preferences disable automatic news scrolling by default.
+[Kache](https://github.com/kunobi-ninja/kache) is optional. Install a prebuilt
+release, or use Rust 1.95 or newer for
+`cargo install kache --locked --version 1.0.0`, then run `kache init`.
+The application still uses Rust 1.85.1. Use `kache doctor` and `kache stats` to
+inspect setup and cache hits.
+
+### CI and advisories
+
+[CI](.github/workflows/ci.yml) runs formatting, Clippy, Rust and Chromium tests,
+Rust/npm advisory scans, and final-image build/runtime/security checks on PRs and
+master pushes. It also runs weekly and supports manual dispatch. Actions use
+pinned SHAs and read-only repository permissions. Rust and RustSec builds have
+separate Kache caches; container publishing uses a Buildx layer cache.
+
+There are no accepted **Rust or npm** advisories in the checked-in policy.
+Runtime-image applicability exceptions are separately scoped and expire;
+see [SECURITY.md](SECURITY.md) and [.grype.yaml](.grype.yaml).
+
+## Releases
+
+Publishing requires a `DOCKERHUB_TOKEN` Actions secret with write access to
+`agaddy/bitcoin_price_tracker`. Merge through a passing PR and use a clean,
+up-to-date `master` checkout. Check existing tags and choose an **unused** stable
+`vMAJOR.MINOR.PATCH` version. Set `release_tag` to that value before running:
+
+```bash
+: "${release_tag:?Set release_tag to the new stable release tag}"
+git tag "$release_tag"
+git push origin "$release_tag"
+```
+
+The [container workflow](.github/workflows/container.yml) checks that the tagged
+commit matches current `master`, reruns exact-commit Rust/browser/advisory checks,
+and verifies/scans a candidate image before publishing that same image without
+rebuilding. It publishes the version without the leading `v` and `latest`;
+branch pushes and prerelease tags do not publish images. Weekly CI also resolves
+and scans the published `latest` digest.
+
+The checked-in [ruleset snapshots](.github/rulesets) require passing PR checks
+and restrict release-tag creation to admins while prohibiting tag moves/deletion.
+Live repository settings are external; see [security policy](SECURITY.md#runtime-images-and-release-checks).
+A git tag, successful image publication, a GitHub Release record, and a production
+rollout are separate events. This workflow publishes images; it does not create
+a GitHub Release or update the infrastructure deployment.
+
+## Documentation and work tracking
+
+- [Source observations and price API contract](docs/source-contract.md): current
+  wire format, SQLite migration, freshness, and persistence semantics.
+- [Security policy and review history](SECURITY.md): current checks/exception
+  policy, dated applicability reviews, and historical edge observations.
+- [Archived implementation audit](AUDIT.md) and [September security audit](SECURITY_AUDIT.md):
+  historical findings and evidence, rather than today's work or deployment status.
+- [Original project brief](project_plan): the initial requirements, preserved as history.
+- [Agent instructions](AGENTS.md): architecture, conventions, validation, and Beads workflow.
+
+Current tasks, blockers, and persistent project memory live in Beads. Run
+`bd ready`, `bd show <id>`, and `bd prime` for the work queue and workflow;
+`.beads/issues.jsonl` is a passive export, not the issue database or sync protocol.
