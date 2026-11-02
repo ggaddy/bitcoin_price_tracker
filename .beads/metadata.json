@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "bitcoin_price_tracker",
+  "project_id": "6ad24ac9-b88c-4706-b60e-aa5ba2805796"
+}
