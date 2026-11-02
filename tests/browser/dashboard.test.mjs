@@ -73,7 +73,7 @@ async function setup(t, options = {}) {
     window.addEventListener('securitypolicyviolation', event => window.cspViolations.push(event.violatedDirective));
     window.addEventListener('unhandledrejection', event => window.unhandled.push(String(event.reason)));
   });
-  if (options.init) await context.addInitScript(options.init);
+  if (options.init) await context.addInitScript(options.init, options.initArg);
   await context.route('**/*', async route => {
     const url = route.request().url();
     if (!url.startsWith(base + '/')) { errors.push(`Unexpected external request: ${url}`); return route.abort(); }
@@ -456,6 +456,183 @@ test('RSS failure leaves price dashboard working', async t => {
   await text(page, 'status', 'LIVE');
 });
 
+// Holding headers or an already-read body deliberately ignores cancellation so
+// the tests can exercise completions from a previous visibility period.
+function holdFirstNewsResponse(stage) {
+  const originalFetch = window.fetch;
+  window.newsSignals = [];
+  window.fetch = async (...args) => {
+    if (args[0] !== '/api/news') return originalFetch(...args);
+    const count = window.newsSignals.push(args[1].signal);
+    const response = await originalFetch(...args);
+    if (count === 1 && stage === 'headers') {
+      await new Promise((resolve, reject) => {
+        window.releaseNews = fail => fail ? reject(new Error('Late RSS failure')) : resolve();
+      });
+    } else if (count === 1 && stage === 'body') {
+      const body = await response.json();
+      response.json = () => new Promise((resolve, reject) => {
+        window.releaseNews = fail => fail ? reject(new Error('Late RSS failure')) : resolve(body);
+      });
+    }
+    return response;
+  };
+}
+
+const newsFeed = title => `<rss><channel><item><title>${title}</title><link>https://news.bitcoin.com/story/</link></item></channel></rss>`;
+
+for (const transition of ['hide', 'pagehide']) {
+  test(`RSS ${transition} aborts held headers and resumes polling once`, async t => {
+    let requests = 0, firstRoute;
+    const started = new Promise(resolve => { firstRoute = resolve; });
+    const app = await setup(t, { init: holdFirstNewsResponse, news: route => {
+      if (++requests === 1) { firstRoute(route); return; }
+      return json(route, { xml: newsFeed('Current headline'), stale: false });
+    } });
+    const held = await started;
+    const status = await app.page.locator('#feed-status').textContent();
+    const failed = app.page.waitForEvent('requestfailed', req => req.url().endsWith('/api/news'));
+    await app.page.evaluate(transition => {
+      if (transition === 'hide') window.changeVisibility(true);
+      else window.dispatchEvent(new Event('pagehide'));
+    }, transition);
+    assert.equal(await app.page.evaluate(() => window.newsSignals[0].aborted), true);
+    await failed;
+    await json(held, { xml: newsFeed('Old headline'), stale: false }).catch(() => {});
+    await tick(app.page, 20000);
+    assert.equal(requests, 1, 'no news requests while stopped');
+    assert.equal(await app.page.locator('#feed-status').textContent(), status);
+    assert.doesNotMatch(await app.page.locator('#feed-list').textContent(), /Old headline/);
+    await app.page.evaluate(transition => {
+      for (let i = 0; i < 2; i++) {
+        if (transition === 'hide') window.changeVisibility(false);
+        else window.dispatchEvent(new Event('pageshow'));
+      }
+    }, transition);
+    await text(app.page, 'feed-list', 'Current headline');
+    await text(app.page, 'status', 'LIVE');
+    await tick(app.page, 5100);
+    assert.equal(requests, 2);
+    assert.equal(app.maxPrices(), 1);
+    assert.equal(app.maxPresence(), 1);
+  });
+}
+
+for (const stage of ['headers', 'body']) {
+  for (const resumeBeforeRelease of [false, true]) {
+    test(`RSS late ${stage} cannot render or reschedule after ${resumeBeforeRelease ? 'rapid hide/show' : 'hide'}`, async t => {
+      let requests = 0;
+      const { page } = await setup(t, { init: holdFirstNewsResponse, initArg: stage,
+        news: route => json(route, ++requests === 1
+          ? { xml: newsFeed('Old headline'), stale: true, refreshing: true }
+          : { xml: newsFeed('Current headline'), stale: false }) });
+      await page.waitForFunction(() => typeof window.releaseNews === 'function');
+      const status = await page.locator('#feed-status').textContent();
+      await page.evaluate(resume => {
+        window.changeVisibility(true);
+        if (resume) {
+          for (let i = 0; i < 4; i++) { window.changeVisibility(false); window.changeVisibility(true); }
+          window.changeVisibility(false);
+          window.dispatchEvent(new Event('pagehide'));
+          window.dispatchEvent(new Event('pageshow'));
+        }
+      }, resumeBeforeRelease);
+      assert.equal(await page.evaluate(() => window.newsSignals[0].aborted), true);
+      await tick(page, 100);
+      assert.equal(requests, 1, 'keep ownership until the previous request settles');
+      await page.evaluate(() => window.releaseNews());
+      await tick(page, 100);
+      if (!resumeBeforeRelease) {
+        assert.equal(await page.locator('#feed-status').textContent(), status);
+        assert.doesNotMatch(await page.locator('#feed-list').textContent(), /Old headline/);
+        await page.evaluate(() => window.changeVisibility(false));
+      }
+      await text(page, 'feed-list', 'Current headline');
+      await text(page, 'feed-status', 'Updates every 5 minutes');
+      await tick(page, 5100);
+      assert.equal(requests, 2, 'discard the old refreshing response and its short retry cadence');
+    });
+  }
+
+  test(`RSS late ${stage} failure cannot delay resumed polling`, async t => {
+    let requests = 0;
+    const { page } = await setup(t, { init: holdFirstNewsResponse, initArg: stage,
+      news: route => { requests++; return json(route, { xml: newsFeed('Current headline'), stale: false }); } });
+    await page.waitForFunction(() => typeof window.releaseNews === 'function');
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('pagehide'));
+      window.dispatchEvent(new Event('pageshow'));
+      window.releaseNews(true);
+    });
+    await tick(page, 100);
+    await text(page, 'feed-list', 'Current headline');
+    await text(page, 'feed-status', 'Updates every 5 minutes');
+    assert.equal(requests, 2, 'cancelled failure must not set a five-minute delay');
+  });
+}
+
+test('RSS stays stopped on an initially hidden page and starts once when shown', async t => {
+  let requests = 0;
+  const { page } = await setup(t, { init: () => { window.testHidden = true; },
+    news: route => { requests++; return json(route, { xml: newsFeed('Current headline'), stale: false }); } });
+  await tick(page, 20000);
+  assert.equal(requests, 0);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('pageshow'));
+    window.changeVisibility(false);
+    window.dispatchEvent(new Event('pageshow'));
+    window.changeVisibility(false);
+  });
+  await text(page, 'feed-list', 'Current headline');
+  await text(page, 'status', 'LIVE');
+  await tick(page, 5100);
+  assert.equal(requests, 1);
+});
+
+test('missing AbortController reports unavailable RSS without unhandled errors or requests', async t => {
+  let requests = 0;
+  const { page } = await setup(t, { init: () => { window.AbortController = undefined; },
+    news: route => { requests++; return json(route, {}); } });
+  await text(page, 'status', 'UNSUPPORTED');
+  await text(page, 'feed-status', 'temporarily unavailable');
+  assert.equal(requests, 0);
+});
+
+test('RSS response-body deadline preserves cached headlines and five-minute failure cadence', async t => {
+  let requests = 0;
+  const app = await setup(t, { news: route => json(route, { xml: newsFeed('Cached headline'), refreshing: ++requests === 1 }),
+    init: () => {
+      const originalFetch = window.fetch;
+      let news = 0;
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[0] === '/api/news' && ++news === 2) {
+          response.json = () => new Promise((resolve, reject) => {
+            window.newsBodySignal = args[1].signal;
+            args[1].signal.addEventListener('abort', () => reject(new Error('Body aborted')), { once: true });
+          });
+        }
+        return response;
+      };
+    } });
+  await text(app.page, 'feed-list', 'Cached headline');
+  await tick(app.page, 2100);
+  await app.page.waitForFunction(() => window.newsBodySignal !== undefined);
+  await tick(app.page, 15100);
+  assert.equal(await app.page.evaluate(() => window.newsBodySignal.aborted), true);
+  await text(app.page, 'feed-status', 'Showing previous headlines — retrying in 5 minutes');
+  await text(app.page, 'feed-list', 'Cached headline');
+  await app.page.clock.fastForward(299000);
+  assert.equal(requests, 2);
+  await tick(app.page, 1100);
+  await text(app.page, 'feed-status', 'Updates every 5 minutes');
+  assert.equal(requests, 3);
+  assert.ok(app.presence.filter(body => body.active).length >= 3);
+  assert.ok(app.prices() >= 3);
+  assert.equal(app.maxPrices(), 1);
+  assert.equal(app.maxPresence(), 1);
+});
+
 
 test('RSS cold start retries promptly while prices stay available', async t => {
   let requests = 0;
@@ -485,6 +662,22 @@ test('RSS serves old headlines during refresh and defers retries while hidden', 
   assert.equal(requests, 1);
   await page.evaluate(() => window.changeVisibility(false));
   await text(page, 'feed-list', 'Updated headline');
+  assert.equal(requests, 2);
+});
+
+test('RSS resumes the remaining retry delay when shown before it expires', async t => {
+  let requests = 0;
+  const { page } = await setup(t, { news: route => json(route, {
+    xml: newsFeed(++requests === 1 ? 'Cached headline' : 'Current headline'), refreshing: requests === 1,
+  }) });
+  await text(page, 'feed-status', 'Refreshing cached');
+  await page.evaluate(() => window.changeVisibility(true));
+  await tick(page, 1000);
+  await page.evaluate(() => window.changeVisibility(false));
+  await tick(page, 500);
+  assert.equal(requests, 1);
+  await tick(page, 600);
+  await text(page, 'feed-list', 'Current headline');
   assert.equal(requests, 2);
 });
 
