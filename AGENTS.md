@@ -1,128 +1,113 @@
-# Agent Instructions
+# Agent instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+## Work tracking
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [sync-concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
-
-## Quick Reference
+Use **Beads (`bd`) for all task tracking**, dependencies, blockers, and persistent
+project memory. Read the [project Beads skill](.agents/skills/beads/SKILL.md) and
+run `bd prime` for full workflow context; run it again after context recovery.
+Do not create markdown task trackers or MEMORY.md files. Use `bd remember` for
+persistent knowledge.
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+bd ready                 # Find available work
+bd show ISSUE_ID         # Replace ISSUE_ID with the selected issue
+bd update ISSUE_ID --claim # Claim atomically before implementation
+bd create --title="..." --description="..." --type=task --priority=2
+bd close ISSUE_ID        # Close only after the work is actually complete
 ```
 
-## Non-Interactive Shell Commands
+Issues live in a local Dolt database managed by `bd`. `.beads/issues.jsonl` is a
+passive export, not the source of truth; do not import it during normal work.
+Cross-machine sync uses `bd dolt push/pull` and `refs/dolt/data` on the git remote,
+separate from code branches under `refs/heads/*`. Use `bd where` to locate the
+active workspace. See the [Beads sync concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md).
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+The active profile is **conservative**: do not create git commits, push code, or
+run Dolt remote sync without explicit user authorization. Tool approval settings
+do not change this project policy. Beads guidance is subordinate to the current
+user, repository, and orchestrator instructions.
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+## Build and validation
 
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
-
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
-
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
+Run from the repository root. Rust 1.85.1, rustfmt, and Clippy are pinned by
+[rust-toolchain.toml](rust-toolchain.toml); use locked dependencies:
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   bd dolt push
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
-
-### Quick Reference
+Dashboard changes also need deterministic Chromium tests (Node.js 20 or newer):
 
 ```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>           # Complete work
-bd prime                # Refresh Beads context
+npm ci --prefix tests/browser
+npm exec --prefix tests/browser -- playwright install chromium
+npm test --prefix tests/browser
 ```
 
-### Rules
+See [README.md](README.md#development-and-tests) for Linux browser dependencies,
+embedded-asset checks, optional Kache, Selenium, and container verification.
+Runtime-image/native-dependency changes require the documented final-image
+verification and advisory review; the verifier needs host Python 3 and `readelf`.
 
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
+## Architecture
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
-<!-- END BEADS CODEX SETUP -->
+The application is one Rust/Axum process with SQLite persistence and embedded
+HTML/CSS/JavaScript. There is no frontend build step. One application instance
+owns each database; presence, rate limits, refresh ownership, and backoff are
+process-local. Kubernetes manifests and rollout evidence live in the separate
+`ggaddy/kube-lan-rke2` repository.
+
+| Area | Source |
+| --- | --- |
+| Startup, configuration, shared state | `src/main.rs`, `src/config.rs`, `src/state.rs` |
+| Routes, cached price responses, viewer admission | `src/app.rs`, `src/handlers.rs`, `src/presence.rs` |
+| Provider adapters and refresh coordination/backoff | `src/pricing.rs`, `src/refresh.rs` |
+| SQLite migration/transactions, models, freshness/aggregates | `src/storage.rs`, `src/models.rs`, `src/models/source_contract.rs`, `src/freshness.rs` |
+| Connection/request limits and shutdown | `src/lifecycle.rs`, `src/limits.rs` |
+| Embedded dashboard and security/cache headers | `src/ui.rs`, `src/ui.html`, `src/dashboard.js`, `src/dashboard.css`, `src/vendor` |
+| Independent in-memory RSS cache | `src/news.rs` |
+| Local provider/clock fixtures and regressions | `src/test_support.rs`, `src/api_tests.rs`, `src/operations_tests.rs`, `tests/browser/dashboard.test.mjs` |
+
+## Conventions
+
+- Preserve [the price/source contract](docs/source-contract.md). Quote observation
+  times, snapshot persistence time, and provider health have different meanings.
+- Serve cached prices without waiting for provider I/O. Preserve single refresh
+  ownership, ten-second gates, per-provider backoff, and presence admission.
+- Keep blocking SQLite work off async workers and commit quote/health changes
+  atomically. Migrations must roll back on failure; do not infer legacy quote ages.
+- Use local provider fixtures, injected clocks, and temporary databases for tests;
+  ordinary tests must not depend on public provider availability.
+- Render variable browser content as text, preserve bounded requests/visibility
+  ownership, and maintain the CSP. Keep raw viewer IDs out of logs and internal
+  database paths or transport diagnostics out of public responses.
+- Follow [SECURITY.md](SECURITY.md) for native-library exposure and advisory
+  exceptions. Do not suppress findings or extend review deadlines to pass CI.
+- Keep current work in Beads. [AUDIT.md](AUDIT.md), [SECURITY_AUDIT.md](SECURITY_AUDIT.md),
+  and [project_plan](project_plan) preserve dated history, not current work queues.
+- AGENTS.md and CLAUDE.md are independent files. Keep their substantive guidance
+  identical when editing either one.
+
+## Non-interactive commands
+
+Use non-interactive flags so aliases or prompts cannot hang an agent. For
+operations already authorized by the task, use `cp -f`, `mv -f`, and `rm -f`;
+for recursive operations use `cp -rf` and `rm -rf`. These flags do not authorize
+destructive changes. Use `ssh -o BatchMode=yes`, `scp -o BatchMode=yes`,
+`apt-get -y`, and `HOMEBREW_NO_AUTO_UPDATE=1` with `brew` when applicable.
+
+## Session completion
+
+Before reporting completion:
+
+1. Record remaining work/blockers in Beads and close only completed issues.
+2. Run checks appropriate to the changes and report their results/limits.
+3. Run `git status` and review the diff for unintended changes.
+4. Follow the conservative profile: leave commits, code pushes, and Dolt remote
+   sync for explicit authorization. Report changed files and suggested next steps.
+
+Do not stop completed, authorized local work merely because a later commit or
+publish step would need authorization. If an explicitly required sync/push fails,
+report the exact command and error rather than claiming it succeeded.

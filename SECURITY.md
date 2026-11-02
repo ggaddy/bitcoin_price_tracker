@@ -1,4 +1,12 @@
-# Dependency advisories
+# Security policy and review history
+
+The policy sections describe the repository's checked-in checks and requirements.
+[Recorded reviews](#recorded-dependency-and-applicability-reviews) and
+[edge observations](#tracker-edge-policy--verified-october-11-2026-utc) are dated
+evidence, not fresh scans or a live deployment inventory. Current work is tracked
+in Beads; setup and operations are in [README.md](README.md).
+
+## Dependency advisories
 
 CI runs `cargo audit --deny warnings` and `npm audit --audit-level=low` on pull
 requests, pushes to master, and weekly. These jobs fail visibly; neither uses
@@ -11,15 +19,6 @@ There are currently no accepted Rust or npm advisories. Before adding any adviso
 it is not currently possible, actual exposure, mitigations, an owner, a review
 or expiry date, and a tracked removal issue here. Remove the exception when the
 fix is available. Do not suppress a scanner failure merely to make CI pass.
-
-The P5 dependency update removes the unmaintained `paste` dependency by upgrading
-the Selenium client to thirtyfour 0.36.3 with its automatic driver downloader
-disabled. The runner supplies a pinned Selenium container. Patched locked
-versions include quinn-proto 0.11.15, rustls-webpki 0.103.13, and rand 0.9.3.
-See the RustSec database for [quinn-proto](https://rustsec.org/advisories/RUSTSEC-2026-0185.html),
-[rustls-webpki](https://rustsec.org/advisories/RUSTSEC-2026-0104.html),
-[rand](https://rustsec.org/advisories/RUSTSEC-2026-0097.html), and
-[paste](https://rustsec.org/advisories/RUSTSEC-2024-0436.html).
 
 ## Runtime images and release checks
 
@@ -37,14 +36,57 @@ weekly CI additionally resolves and scans the published `latest` digest.
 Unreviewed High/Critical findings fail these jobs, including findings without
 a vendor fix. All other severities remain visible for review.
 
-The active GitHub rulesets are recorded in `.github/rulesets/`: changes to
-`master` require a pull request, resolved review threads, and the five CI checks
-from the GitHub Actions app against an up-to-date branch. There is no admin bypass.
-Zero external approvals are required to support a sole maintainer, so this is
-validation enforcement rather than independent two-person review. Separate tag
-rules permit creation only by repository admins and prohibit moving/deleting
-`v*` tags, including for admins. Repository settings can still be changed by an
-administrator; secure the maintainer's GitHub account and Docker Hub token.
+The checked-in [GitHub ruleset snapshots](.github/rulesets) require a PR,
+resolved review threads, and five GitHub Actions checks against an up-to-date
+branch for `master`, without an admin bypass. They require zero external
+approvals for a sole maintainer: validation enforcement, not two-person review.
+Separate snapshots restrict `v*` tag creation to admins and prohibit tag moves or
+deletion, including for admins. These files record the expected protections;
+verify live settings in GitHub when needed. Repository settings remain externally
+configurable; secure the maintainer's GitHub account and Docker Hub token.
+
+## Runtime advisory policy
+
+The authoritative exception matchers and review deadline are in
+[.grype.yaml](.grype.yaml). The checked-in deadline is **2026-11-10**; review must
+finish before that date. [The deadline checker](scripts/check_image_exceptions.py)
+fails CI/release checks on or after expiry. Owner: repository maintainer `ggaddy`.
+Beads issue `bitcoin_price_tracker-5wx` tracks the next review;
+`bitcoin_price_tracker-wbt` and [GitHub #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40)
+track removal of the CVE-2026-84243 exception.
+
+Retained exceptions are applicability decisions, not patched packages or a clean
+scan. Match only the reviewed advisory, Debian binary package, and exact version;
+keep suppressed matches visible and retain the High/Critical failure threshold.
+Record exposure, mitigations, owner, review date, and removal tracking for every
+exception. Remove an exception when a supported image fixes/removes the affected
+package, and reassess it when runtime/native dependencies or configuration change.
+
+[Runtime verification](scripts/verify_runtime.py) inspects the exact image's
+executable for reviewed native imports and linked libraries, rejects C++/gettext
+imports, and requires `LC_ALL=C`. These guards support the exposure reviews; they
+do not prove every indirect or dynamically loaded library path safe. A review
+must also check fresh scan/vendor evidence for both the candidate and published
+images. This documentation cleanup does not renew any exception or establish
+current upstream fix availability.
+
+## Recorded dependency and applicability reviews
+
+Each subsection records conditions at its named review date. Package versions,
+fix availability, scan counts, older deadlines, and deployment references below
+are historical; the current matcher inventory/deadline comes from the policy
+above and `.grype.yaml`. Preserve this evidence when a later review supersedes it.
+
+### September 2026 dependency baseline
+
+The P5 dependency update removes the unmaintained `paste` dependency by upgrading
+the Selenium client to thirtyfour 0.36.3 with its automatic driver downloader
+disabled. The runner supplies a pinned Selenium container. Patched locked
+versions include quinn-proto 0.11.15, rustls-webpki 0.103.13, and rand 0.9.3.
+See the RustSec database for [quinn-proto](https://rustsec.org/advisories/RUSTSEC-2026-0185.html),
+[rustls-webpki](https://rustsec.org/advisories/RUSTSEC-2026-0104.html),
+[rand](https://rustsec.org/advisories/RUSTSEC-2026-0097.html), and
+[paste](https://rustsec.org/advisories/RUSTSEC-2024-0436.html).
 
 The September update locked Rustls to 0.23.45 (with rustls-webpki 0.103.15), fixing
 [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
@@ -82,7 +124,7 @@ by the scanner for Debian 13:
 | [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435) | `libc6` `2.41-12+deb13u3` | Concerns deprecated DNS printing functions `ns_printrr`, `ns_printrrf`, and `fp_nquery`. None is imported; normal hostname resolution does not print DNS records through them. |
 | [CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091) | `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` | Concerns nonblocking gzip writes. The binary links only libc/libm/libgcc/the loader, does not load zlib, and provides no gzip-writing interface. TLS uses Rustls. |
 
-#### Debian 13 digest update review
+### Debian 13 digest update review
 
 Re-reviewed on 2026-09-21 for distroless digest
 `54df941ed0d06a1bd95ef5e0ce391fd8d9f94b64782dc9a60062727849ee3f97`
@@ -121,7 +163,7 @@ supported image fixes or removes the affected packages.
 CVE, exact binary package version, and package type. Other findings remain
 unsuppressed; no blanket `only-fixed` or OS exclusion is used.
 
-#### October 2026 release review
+### October 2026 release review
 
 Re-reviewed on 2026-10-10 for the UI release. Owner: `ggaddy`; tracking:
 AUD-07 in [the audit](SECURITY_AUDIT.md). Review before **2026-11-10**;
@@ -167,7 +209,7 @@ review; they do not prove every shared-library or dynamically loaded code path
 safe. SQLite extension loading remains disabled and no arbitrary plugin/SQL
 interface is exposed.
 
-#### November 2026 gettext applicability review
+### November 2026 gettext applicability review
 
 Reviewed on 2026-11-01. Owner: `ggaddy`; tracking: AUD-07 and
 [removal issue #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40).
@@ -221,9 +263,11 @@ the clock.
 
 ## Tracker edge policy — verified October 11, 2026 UTC
 
-Cloudflare rules are scoped to `bitcoin.gaddy.it`; they do not change zone-wide
-settings or other applications. Configuration and live observations are also
-recorded in [AUDIT.md](AUDIT.md).
+This is a historical snapshot, last verified October 11, 2026 UTC. Live edge
+configuration and the deployed image were not rechecked during documentation
+cleanup. The observations below concern host-scoped rules for `bitcoin.gaddy.it`,
+not zone-wide settings or other applications. Supporting evidence is archived in
+[AUDIT.md](AUDIT.md) and the `ggaddy/kube-lan-rke2` infrastructure repository.
 
 - **Rate limit:** rule `7e89a32606894c9490a48470d9304473`, expression
   `http.host eq "bitcoin.gaddy.it"`, per IP, 100 requests per 10 seconds;
@@ -246,8 +290,14 @@ recorded in [AUDIT.md](AUDIT.md).
   Asset validators are weak, content-derived cache identifiers rather than
   integrity signatures. Conditional GET/HEAD return 304 when unchanged.
 
-These edge changes are live independently of the application PR. The RSS and
-ETag origin changes and increased 250/second polling budgets require release and
-deployment; v2.9.3 remains deployed. The nominal 1,000-viewer rate arithmetic
-is not a tested throughput guarantee. After rollout, confirm public 304 responses
-and watch rate-limit events, latency, memory and shared-network false positives.
+At that inspection, the edge changes were live while the RSS/ETag application
+changes and increased polling budget awaited release/deployment. The later
+[AUDIT.md](AUDIT.md) note records that follow-up as released and deployed in
+v2.9.4, superseding the earlier “v2.9.3 remains deployed” checkpoint. Neither
+historical observation establishes today's rollout or edge configuration.
+
+For future rollouts, verify the actual deployed digest, public conditional asset
+responses, rate-limit events, latency, memory, and shared-network false positives
+in the infrastructure workflow. The nominal 1,000-viewer rate arithmetic is not
+a tested throughput guarantee; capacity measurement is tracked in
+`bitcoin_price_tracker-4mr`.

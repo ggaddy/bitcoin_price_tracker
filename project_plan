@@ -1,3 +1,13 @@
+# Original project brief (archived)
+
+The original request is preserved below as product history. These requirements
+are not an active task list or a description of outstanding work. The implemented
+application is documented in [README.md](README.md) and
+[docs/source-contract.md](docs/source-contract.md); current tasks and blockers
+live in Beads (`bd ready`, `bd show <id>`).
+
+---
+
 Lets make a web app with a UI that displays the current price of Bitcoin. 
 - use a few different free and open-source bitcoin price trackers
 - store the price in a sqlite database locally in the container. query the upstream price APIs only when a user is on the site. store the price data in the sqlite and serve up the price from the sqlite in a secure manner.
