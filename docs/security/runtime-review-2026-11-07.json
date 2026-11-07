@@ -1,0 +1,1902 @@
+{
+  "schema_version": 1,
+  "review_date_utc": "2026-11-07",
+  "evidence_generated_at_utc": "2026-11-07T15:45:27.968961+00:00",
+  "review_issue": "bitcoin_price_tracker-o6i",
+  "owner": "ggaddy",
+  "source_revision": "bcce713da4065b16b87a8676110d43aaea078e9f",
+  "scope": "Fresh Linux/amd64 candidate, published registry image and supported distroless tag assessment; no production inventory or deployment; original dirty checkout preserved.",
+  "decision": "All 12 existing exceptions still match affected packages with unchanged exposure mitigations. No exception added, removed or renewed. New unaccepted High CVE-2026-76844 blocks all three strict image scans. Supported Debian zlib fix now exists for it and CVE-2026-85091, but is absent from latest distroless. Remediate under bitcoin_price_tracker-he8; full review bitcoin_price_tracker-fmq remains open.",
+  "deadline_context": {
+    "committed_master_and_review_branch": "2026-11-10",
+    "pre_existing_uncommitted_source_draft": "2026-12-02",
+    "action": "Neither deadline changed. Do not treat this failing scan review as an exception renewal."
+  },
+  "scanner": {
+    "version": "0.118.0",
+    "syft_version": "1.51.1",
+    "release_archive_sha256": "1d444c5e7360471815f7158f71935fcecc68a3c417d85c7344f770854300bba2"
+  },
+  "database": {
+    "schemaVersion": "v6.1.10",
+    "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+    "built": "2026-11-07T06:18:48Z",
+    "valid": true
+  },
+  "debian_database_provider": {
+    "captured": "2026-11-07T00:25:01Z",
+    "input": "xxh64:7b7003efe52d14fa"
+  },
+  "checked_in_grype_config_sha256": "0261c4fac35860fa37597b779ba8a1914bde1b182b20b83313c1cbb7ef79dc14",
+  "pre_existing_draft_grype_config_sha256": "b51e0d7eacf024b1cc8078d291194b2236d5370fdbab0995dc78386b306beacb",
+  "runtime_verifier_sha256": "6cf6cf50c9341ab4973bd952e7bcc58cc84ee83bbdf67077399c6fcac5742e77",
+  "images": {
+    "candidate": {
+      "scan_target": "/tmp/btc-runtime-review-20261107/candidate.docker.tar",
+      "configuration_image_id": "sha256:213fc88222ea87536ac3fd7056f6150f02bdb370c5bca25dd3b79138b4f9d43d",
+      "scan_manifest_digest": "sha256:55dc26ba4cac500627eaaafe71bc13f45ea29e90f8b4f78b8500f807b34bd3c6",
+      "architecture": "",
+      "scan_timestamp": "2026-11-07T09:42:54.799787681-06:00",
+      "scan_exit_code": 2,
+      "scan_stderr": [
+        "[0001] ERROR discovered vulnerabilities at or above the severity threshold"
+      ],
+      "raw_scan_sha256": "6b801df154c54ed79ac60a4b5ee07eefabbacf8d63bcc7be5de3bfa8aad8e9a3",
+      "raw_draft_policy_scan_sha256": "dba424e5fc98e04ca729980686f3d92425d1eec38fc24cf60bd2e6a90393cd57",
+      "draft_policy_scan_exit_code": 2,
+      "total_findings": 45,
+      "severity_counts_including_suppressed": {
+        "Negligible": 7,
+        "High": 13,
+        "Medium": 22,
+        "Low": 3
+      },
+      "suppressed_findings": 12,
+      "unaccepted_high_or_critical": [
+        {
+          "advisory": "CVE-2026-76844",
+          "severity": "High",
+          "namespace": "debian:distro:debian:13",
+          "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-76844",
+          "package": {
+            "name": "zlib1g",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "type": "deb",
+            "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+            "upstreams": [
+              {
+                "name": "zlib",
+                "version": "1:1.3.dfsg+really1.3.1-1"
+              }
+            ]
+          },
+          "fix": {
+            "versions": [],
+            "state": "not-fixed"
+          },
+          "excepted": false
+        }
+      ],
+      "native_and_runtime_verification": {
+        "executable_sha256": "7ecaaffb67799c11360bfa27e5436f44e5d19e48e7dca7f28e6f8748356d0b21",
+        "undefined_dynamic_imports": [
+          "_ITM_deregisterTMCloneTable",
+          "_ITM_registerTMCloneTable",
+          "_Unwind_Backtrace",
+          "_Unwind_DeleteException",
+          "_Unwind_GetDataRelBase",
+          "_Unwind_GetIP",
+          "_Unwind_GetIPInfo",
+          "_Unwind_GetLanguageSpecificData",
+          "_Unwind_GetRegionStart",
+          "_Unwind_GetTextRelBase",
+          "_Unwind_RaiseException",
+          "_Unwind_Resume",
+          "_Unwind_SetGR",
+          "_Unwind_SetIP",
+          "__cxa_finalize",
+          "__cxa_thread_atexit_impl",
+          "__errno_location",
+          "__gmon_start__",
+          "__libc_current_sigrtmax",
+          "__libc_start_main",
+          "__res_init",
+          "__tls_get_addr",
+          "__xpg_strerror_r",
+          "abort",
+          "accept4",
+          "access",
+          "bcmp",
+          "bind",
+          "calloc",
+          "clock_gettime",
+          "close",
+          "connect",
+          "dl_iterate_phdr",
+          "dlclose",
+          "dlerror",
+          "dlopen",
+          "dlsym",
+          "epoll_create1",
+          "epoll_ctl",
+          "epoll_wait",
+          "eventfd",
+          "fchmod",
+          "fchown",
+          "fcntl",
+          "fcntl64",
+          "free",
+          "freeaddrinfo",
+          "fstat64",
+          "fsync",
+          "ftruncate64",
+          "gai_strerror",
+          "getaddrinfo",
+          "getauxval",
+          "getcwd",
+          "getenv",
+          "geteuid",
+          "getpeername",
+          "getpid",
+          "getrandom",
+          "getsockname",
+          "getsockopt",
+          "gettimeofday",
+          "gnu_get_libc_version",
+          "listen",
+          "localtime_r",
+          "log",
+          "lseek64",
+          "lstat64",
+          "malloc",
+          "memchr",
+          "memcmp",
+          "memcpy",
+          "memmove",
+          "memset",
+          "mkdir",
+          "mmap64",
+          "mprotect",
+          "mremap",
+          "munmap",
+          "nanosleep",
+          "open",
+          "open64",
+          "pause",
+          "poll",
+          "posix_memalign",
+          "pow",
+          "pread64",
+          "pthread_attr_destroy",
+          "pthread_attr_getguardsize",
+          "pthread_attr_getstack",
+          "pthread_attr_init",
+          "pthread_attr_setstacksize",
+          "pthread_create",
+          "pthread_detach",
+          "pthread_getattr_np",
+          "pthread_join",
+          "pthread_key_create",
+          "pthread_key_delete",
+          "pthread_mutex_destroy",
+          "pthread_mutex_init",
+          "pthread_mutex_lock",
+          "pthread_mutex_trylock",
+          "pthread_mutex_unlock",
+          "pthread_mutexattr_destroy",
+          "pthread_mutexattr_init",
+          "pthread_mutexattr_settype",
+          "pthread_self",
+          "pthread_setname_np",
+          "pthread_setspecific",
+          "pwrite64",
+          "qsort",
+          "read",
+          "readlink",
+          "realloc",
+          "realpath",
+          "recv",
+          "rmdir",
+          "sched_getaffinity",
+          "sched_yield",
+          "send",
+          "setsockopt",
+          "shutdown",
+          "sigaction",
+          "sigaltstack",
+          "signal",
+          "socket",
+          "socketpair",
+          "stat64",
+          "statx",
+          "strchr",
+          "strcmp",
+          "strcspn",
+          "strlen",
+          "strncmp",
+          "strrchr",
+          "strspn",
+          "syscall",
+          "sysconf",
+          "time",
+          "unlink",
+          "utimes",
+          "write",
+          "writev"
+        ],
+        "needed_libraries": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libgcc_s.so.1",
+          "libm.so.6"
+        ],
+        "exit_code": 0,
+        "output": [
+          "AUD-07 release imports and linked-library exposure checks passed.",
+          "Non-root startup, configured bind address, empty health and price responses passed.",
+          "Seeded quote serving, cached startup registration and pause/resume passed without upstream calls.",
+          "Graceful shutdown, restart persistence and unhealthy database detection passed.",
+          "Health probe recovery and configuration failure passed.",
+          "Non-root bind-mount ownership and startup passed."
+        ]
+      },
+      "podman_manifest_digest": "sha256:1f691fa66f1c8262a35739d0d520be2a5bb63c073ba86f1bfa83fb2d5cf4a684",
+      "environment": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "RUST_LOG=info",
+        "DATABASE_PATH=/app/data/bitcoin_prices.db",
+        "BIND_ADDRESS=0.0.0.0:3000",
+        "LANG=C",
+        "LC_ALL=C"
+      ],
+      "build_inputs_sha256": {
+        "Cargo.lock": "e9517ba03292e15ce0c3836c19868c09b3457d624c3aefdc914b1809beda9dbf",
+        "Cargo.toml": "0289e49ca6892ce8b4213a4aadc0ce681df33e7a2f37cdc87286d3548fc8dc3b",
+        "Dockerfile": "13d9b0322633b13f85130b5638582b824bd20755043ad4f76c7c6e10c4d9b043",
+        "rust-toolchain.toml": "b323b19900e4b811af0a8facce5ec11249ed135ae5a46ff5c0be90067521e11f",
+        "src/api_tests.rs": "2fa044bbd650f4fd2e687fa9746b181157094ccd30373943a46bdcb771790872",
+        "src/app.rs": "20905404193c7cff17596e60b1096d69c200f699519a69ceac01d459b065f3b3",
+        "src/config.rs": "1c198d3068e0ac9f9b177282d2ebe1f30bf4a5a54962e94caef4eecf722cbcda",
+        "src/dashboard.css": "4199d183607ec58e7709d907e3b3e75af1a35383a4fd8c95a8deb536d8e5e965",
+        "src/dashboard.js": "71ae096601e8ba186a4a19b19e78f9c8d86139bc41598c9b58b97b9b1ceba80d",
+        "src/errors.rs": "ce516d38375c5089e938f479ed76bebaad2ea49fdda9e7bed9e0990097af56a8",
+        "src/freshness.rs": "b8307a99d5bab7cfdf636e7ab868b04887ef7ecd6ad6db9d7c3b11bcc7194321",
+        "src/handlers.rs": "ec323af2c425883df79ca3a98d070920fabf04191ead20f6dc2d229ace7d1062",
+        "src/lifecycle.rs": "8249cff1b51682086ad05206fdc6e2f77361d2c1e6d64b3e9607a446918bd9a6",
+        "src/limits.rs": "32b69f7034245a61197dbc67b0a8af5f318e2eab0d65f7c2072db822a18ea492",
+        "src/main.rs": "748f583442101346406de57afce2f499ca99c1892417526f0256fc3b4345303e",
+        "src/models/source_contract.rs": "3a78e04f9266bc86be36543d6e937315992fca04b46d7982c6ec35408bcb78d3",
+        "src/models.rs": "4112fa91fff5d63a13d57765e6ff66ae28c60d056b53ecea91bd304c638e16ff",
+        "src/news.rs": "a8b0d80d378c72d116bc2802cccb93aebf65e3932ac864d10026ad8f34ef0e73",
+        "src/operations_tests.rs": "fab9ceda8ee4046f113dd4f49caa3bb7950b609122eafe9505d13ecfa3a22311",
+        "src/presence.rs": "67821a1f964f1195546af84df2fd787767aa3c8c2f25ceadd16dba63f9774d3e",
+        "src/pricing.rs": "89c721dfa0a944e6570650c7af8fc3a798f1a5bf8ef59e1b8a3680271be6a21e",
+        "src/refresh.rs": "0c2635a4abb9e70d4dba9c9f9d8ba963aecd3581a5a28236af8b536bee95b4bc",
+        "src/selenium_tests.rs": "af2266a6b92db5ce25c7622ee51927b98f96ccb4dbe9a96bbdeacd991a6adbb0",
+        "src/state.rs": "e189983a168ff83299a66c352b9d7219f0bf014a852277930bd733cd5b494526",
+        "src/storage.rs": "4df0d9e4380f2e4a926d439907f882158ecb643b37fec2665d53ea3cb5dee344",
+        "src/test_support.rs": "f0d15c5a8cf9e682cfce05ff545810c6d074dffd15746a1de3dce9872200b4f8",
+        "src/ui.html": "bc2d61e39f583ac5108825e130b2ecc3e99d7fc0e1cea50df31147b1f230d505",
+        "src/ui.rs": "46955d6a819d394c622302648c3cda6f432fbef56687221a053000a2fa592898",
+        "src/util.rs": "a36e43d10f39ae9bb1425c8052d3465695b6c51d3b910446de3254381d90beb3",
+        "src/vendor/cybercore-0.3.0.min.css": "8c4bc2fc1eb7e80c565e992a3815056787bcf74b5f56f8d7c97b6927f7e74c5c",
+        "src/vendor/cybercore-LICENSE": "109da8a139e3e9db31c48e5ad6cbd2826a895cbbbe4ab99959a30f6deef0fb48"
+      }
+    },
+    "published": {
+      "scan_target": "docker.io/agaddy/bitcoin_price_tracker@sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc",
+      "configuration_image_id": "sha256:654481b44a94d15582955bbc87f5ab5a86a5c9429ad3fd3b485916d6c0207d06",
+      "scan_manifest_digest": "sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc",
+      "architecture": "",
+      "scan_timestamp": "2026-11-07T09:42:56.16248702-06:00",
+      "scan_exit_code": 2,
+      "scan_stderr": [
+        "[0003] ERROR discovered vulnerabilities at or above the severity threshold"
+      ],
+      "raw_scan_sha256": "530501f07c30e7fe940629254a497aeb56d7a84fdea18ccaad8b2db9397bfd6d",
+      "raw_draft_policy_scan_sha256": "787303fc4fcedeb07620677d50cd75324859c5a65e3500480319f3102c681cd7",
+      "draft_policy_scan_exit_code": 2,
+      "total_findings": 45,
+      "severity_counts_including_suppressed": {
+        "Negligible": 7,
+        "High": 13,
+        "Medium": 22,
+        "Low": 3
+      },
+      "suppressed_findings": 12,
+      "unaccepted_high_or_critical": [
+        {
+          "advisory": "CVE-2026-76844",
+          "severity": "High",
+          "namespace": "debian:distro:debian:13",
+          "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-76844",
+          "package": {
+            "name": "zlib1g",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "type": "deb",
+            "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+            "upstreams": [
+              {
+                "name": "zlib",
+                "version": "1:1.3.dfsg+really1.3.1-1"
+              }
+            ]
+          },
+          "fix": {
+            "versions": [],
+            "state": "not-fixed"
+          },
+          "excepted": false
+        }
+      ],
+      "native_and_runtime_verification": {
+        "executable_sha256": "7ecaaffb67799c11360bfa27e5436f44e5d19e48e7dca7f28e6f8748356d0b21",
+        "undefined_dynamic_imports": [
+          "_ITM_deregisterTMCloneTable",
+          "_ITM_registerTMCloneTable",
+          "_Unwind_Backtrace",
+          "_Unwind_DeleteException",
+          "_Unwind_GetDataRelBase",
+          "_Unwind_GetIP",
+          "_Unwind_GetIPInfo",
+          "_Unwind_GetLanguageSpecificData",
+          "_Unwind_GetRegionStart",
+          "_Unwind_GetTextRelBase",
+          "_Unwind_RaiseException",
+          "_Unwind_Resume",
+          "_Unwind_SetGR",
+          "_Unwind_SetIP",
+          "__cxa_finalize",
+          "__cxa_thread_atexit_impl",
+          "__errno_location",
+          "__gmon_start__",
+          "__libc_current_sigrtmax",
+          "__libc_start_main",
+          "__res_init",
+          "__tls_get_addr",
+          "__xpg_strerror_r",
+          "abort",
+          "accept4",
+          "access",
+          "bcmp",
+          "bind",
+          "calloc",
+          "clock_gettime",
+          "close",
+          "connect",
+          "dl_iterate_phdr",
+          "dlclose",
+          "dlerror",
+          "dlopen",
+          "dlsym",
+          "epoll_create1",
+          "epoll_ctl",
+          "epoll_wait",
+          "eventfd",
+          "fchmod",
+          "fchown",
+          "fcntl",
+          "fcntl64",
+          "free",
+          "freeaddrinfo",
+          "fstat64",
+          "fsync",
+          "ftruncate64",
+          "gai_strerror",
+          "getaddrinfo",
+          "getauxval",
+          "getcwd",
+          "getenv",
+          "geteuid",
+          "getpeername",
+          "getpid",
+          "getrandom",
+          "getsockname",
+          "getsockopt",
+          "gettimeofday",
+          "gnu_get_libc_version",
+          "listen",
+          "localtime_r",
+          "log",
+          "lseek64",
+          "lstat64",
+          "malloc",
+          "memchr",
+          "memcmp",
+          "memcpy",
+          "memmove",
+          "memset",
+          "mkdir",
+          "mmap64",
+          "mprotect",
+          "mremap",
+          "munmap",
+          "nanosleep",
+          "open",
+          "open64",
+          "pause",
+          "poll",
+          "posix_memalign",
+          "pow",
+          "pread64",
+          "pthread_attr_destroy",
+          "pthread_attr_getguardsize",
+          "pthread_attr_getstack",
+          "pthread_attr_init",
+          "pthread_attr_setstacksize",
+          "pthread_create",
+          "pthread_detach",
+          "pthread_getattr_np",
+          "pthread_join",
+          "pthread_key_create",
+          "pthread_key_delete",
+          "pthread_mutex_destroy",
+          "pthread_mutex_init",
+          "pthread_mutex_lock",
+          "pthread_mutex_trylock",
+          "pthread_mutex_unlock",
+          "pthread_mutexattr_destroy",
+          "pthread_mutexattr_init",
+          "pthread_mutexattr_settype",
+          "pthread_self",
+          "pthread_setname_np",
+          "pthread_setspecific",
+          "pwrite64",
+          "qsort",
+          "read",
+          "readlink",
+          "realloc",
+          "realpath",
+          "recv",
+          "rmdir",
+          "sched_getaffinity",
+          "sched_yield",
+          "send",
+          "setsockopt",
+          "shutdown",
+          "sigaction",
+          "sigaltstack",
+          "signal",
+          "socket",
+          "socketpair",
+          "stat64",
+          "statx",
+          "strchr",
+          "strcmp",
+          "strcspn",
+          "strlen",
+          "strncmp",
+          "strrchr",
+          "strspn",
+          "syscall",
+          "sysconf",
+          "time",
+          "unlink",
+          "utimes",
+          "write",
+          "writev"
+        ],
+        "needed_libraries": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libgcc_s.so.1",
+          "libm.so.6"
+        ],
+        "exit_code": 0,
+        "output": [
+          "AUD-07 release imports and linked-library exposure checks passed.",
+          "Non-root startup, configured bind address, empty health and price responses passed.",
+          "Seeded quote serving, cached startup registration and pause/resume passed without upstream calls.",
+          "Graceful shutdown, restart persistence and unhealthy database detection passed.",
+          "Health probe recovery and configuration failure passed.",
+          "Non-root bind-mount ownership and startup passed."
+        ]
+      },
+      "registry_manifest_digest": "sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc",
+      "labels": {
+        "org.opencontainers.image.created": "2026-11-02T05:37:58.795Z",
+        "org.opencontainers.image.description": "website tracking BTC price",
+        "org.opencontainers.image.licenses": "",
+        "org.opencontainers.image.revision": "bcce713da4065b16b87a8676110d43aaea078e9f",
+        "org.opencontainers.image.source": "https://github.com/ggaddy/bitcoin_price_tracker",
+        "org.opencontainers.image.title": "bitcoin_price_tracker",
+        "org.opencontainers.image.url": "https://github.com/ggaddy/bitcoin_price_tracker",
+        "org.opencontainers.image.version": "2.9.7"
+      },
+      "environment": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "RUST_LOG=info",
+        "DATABASE_PATH=/app/data/bitcoin_prices.db",
+        "BIND_ADDRESS=0.0.0.0:3000",
+        "LANG=C",
+        "LC_ALL=C"
+      ]
+    },
+    "latest-base": {
+      "scan_target": "/tmp/btc-runtime-review-20261107/latest-base",
+      "configuration_image_id": "sha256:f8e7d139d15a06583579b61eeb711507cf76e4a64768676502f7b861ced6c2c0",
+      "scan_manifest_digest": "sha256:65af2e9e44e71de2df28245f6814301775d3ef04436b7d563f240d86fedf24aa",
+      "architecture": "",
+      "scan_timestamp": "2026-11-07T09:42:54.65748138-06:00",
+      "scan_exit_code": 2,
+      "scan_stderr": [
+        "[0001] ERROR discovered vulnerabilities at or above the severity threshold"
+      ],
+      "raw_scan_sha256": "f9ee84d15c460d705b323fe96739b924da08805e02b0640f45c9f6f1b39ff44f",
+      "raw_draft_policy_scan_sha256": "d07cd912b9165abfffee96c26b07541f6a799545f7f2ad7360a888a41f3dc065",
+      "draft_policy_scan_exit_code": 2,
+      "total_findings": 45,
+      "severity_counts_including_suppressed": {
+        "Negligible": 7,
+        "High": 13,
+        "Medium": 22,
+        "Low": 3
+      },
+      "suppressed_findings": 12,
+      "unaccepted_high_or_critical": [
+        {
+          "advisory": "CVE-2026-76844",
+          "severity": "High",
+          "namespace": "debian:distro:debian:13",
+          "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-76844",
+          "package": {
+            "name": "zlib1g",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "type": "deb",
+            "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+            "upstreams": [
+              {
+                "name": "zlib",
+                "version": "1:1.3.dfsg+really1.3.1-1"
+              }
+            ]
+          },
+          "fix": {
+            "versions": [],
+            "state": "not-fixed"
+          },
+          "excepted": false
+        }
+      ],
+      "registry_index_digest": "sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1",
+      "registry_amd64_manifest_digest": "sha256:65af2e9e44e71de2df28245f6814301775d3ef04436b7d563f240d86fedf24aa"
+    }
+  },
+  "shared_findings": [
+    {
+      "advisory": "CVE-2010-4756",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2010-4756",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2018-20796",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2018-20796",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2019-1010022",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2019-1010022",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2019-1010023",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2019-1010023",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2019-1010024",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2019-1010024",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2019-1010025",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2019-1010025",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2019-9192",
+      "severity": "Negligible",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2019-9192",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-102010",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "package": {
+        "name": "gcc-14-base",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/gcc-14-base@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-102010",
+          "namespace": "",
+          "package": {
+            "name": "gcc-14-base",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-102010",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "package": {
+        "name": "libgcc-s1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgcc-s1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-102010",
+          "namespace": "",
+          "package": {
+            "name": "libgcc-s1",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-102010",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "package": {
+        "name": "libgomp1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgomp1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-102010",
+          "namespace": "",
+          "package": {
+            "name": "libgomp1",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-102010",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "package": {
+        "name": "libstdc++6",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-102010",
+          "namespace": "",
+          "package": {
+            "name": "^libstdc\\+\\+6$",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-114690",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114690",
+      "package": {
+        "name": "gcc-14-base",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/gcc-14-base@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114690",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114690",
+      "package": {
+        "name": "libgcc-s1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgcc-s1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114690",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114690",
+      "package": {
+        "name": "libgomp1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgomp1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114690",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114690",
+      "package": {
+        "name": "libstdc++6",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114691",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114691",
+      "package": {
+        "name": "gcc-14-base",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/gcc-14-base@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114691",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114691",
+      "package": {
+        "name": "libgcc-s1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgcc-s1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114691",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114691",
+      "package": {
+        "name": "libgomp1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgomp1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-114691",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-114691",
+      "package": {
+        "name": "libstdc++6",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-115455",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-115455",
+      "package": {
+        "name": "gcc-14-base",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/gcc-14-base@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-115455",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-115455",
+      "package": {
+        "name": "libgcc-s1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgcc-s1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-115455",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-115455",
+      "package": {
+        "name": "libgomp1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgomp1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-115455",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-115455",
+      "package": {
+        "name": "libstdc++6",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-18374",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-18374",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-19499",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-19499",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-19499",
+          "namespace": "",
+          "package": {
+            "name": "libc6",
+            "version": "2.41-12+deb13u4",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-19542",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-19542",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-27171",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-27171",
+      "package": {
+        "name": "zlib1g",
+        "version": "1:1.3.dfsg+really1.3.1-1+b1",
+        "type": "deb",
+        "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+        "upstreams": [
+          {
+            "name": "zlib",
+            "version": "1:1.3.dfsg+really1.3.1-1"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-5435",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-5435",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-5435",
+          "namespace": "",
+          "package": {
+            "name": "libc6",
+            "version": "2.41-12+deb13u4",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-6238",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-6238",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-6368",
+      "severity": "Low",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-6368",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-6791",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-6791",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-76844",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-76844",
+      "package": {
+        "name": "zlib1g",
+        "version": "1:1.3.dfsg+really1.3.1-1+b1",
+        "type": "deb",
+        "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+        "upstreams": [
+          {
+            "name": "zlib",
+            "version": "1:1.3.dfsg+really1.3.1-1"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-77117",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-77117",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-80489",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-80489",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-84243",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-84243",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-84243",
+          "namespace": "",
+          "package": {
+            "name": "^libc6$",
+            "version": "2.41-12+deb13u4",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-85091",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-85091",
+      "package": {
+        "name": "zlib1g",
+        "version": "1:1.3.dfsg+really1.3.1-1+b1",
+        "type": "deb",
+        "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+        "upstreams": [
+          {
+            "name": "zlib",
+            "version": "1:1.3.dfsg+really1.3.1-1"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "not-fixed"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-85091",
+          "namespace": "",
+          "package": {
+            "name": "zlib1g",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-8674",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-8674",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-86805",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-86805",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-89092",
+      "severity": "Medium",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-89092",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-95619",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "package": {
+        "name": "gcc-14-base",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/gcc-14-base@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-95619",
+          "namespace": "",
+          "package": {
+            "name": "gcc-14-base",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-95619",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "package": {
+        "name": "libgcc-s1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgcc-s1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-95619",
+          "namespace": "",
+          "package": {
+            "name": "libgcc-s1",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-95619",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "package": {
+        "name": "libgomp1",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libgomp1@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-95619",
+          "namespace": "",
+          "package": {
+            "name": "libgomp1",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-95619",
+      "severity": "High",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "package": {
+        "name": "libstdc++6",
+        "version": "14.2.0-19",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libstdc%2B%2B6@14.2.0-19?arch=amd64&distro=debian-13.7&upstream=gcc-14",
+        "upstreams": [
+          {
+            "name": "gcc-14"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": true,
+      "applied_ignore_rules": [
+        {
+          "vulnerability": "CVE-2026-95619",
+          "namespace": "",
+          "package": {
+            "name": "^libstdc\\+\\+6$",
+            "version": "14.2.0-19",
+            "language": "",
+            "type": "deb"
+          }
+        }
+      ]
+    },
+    {
+      "advisory": "CVE-2026-95818",
+      "severity": "Low",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-95818",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    },
+    {
+      "advisory": "CVE-2026-97399",
+      "severity": "Low",
+      "namespace": "debian:distro:debian:13",
+      "data_source": "https://security-tracker.debian.org/tracker/CVE-2026-97399",
+      "package": {
+        "name": "libc6",
+        "version": "2.41-12+deb13u4",
+        "type": "deb",
+        "purl": "pkg:deb/debian/libc6@2.41-12%2Bdeb13u4?arch=amd64&distro=debian-13.7&upstream=glibc",
+        "upstreams": [
+          {
+            "name": "glibc"
+          }
+        ]
+      },
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "excepted": false
+    }
+  ],
+  "vendor_review": [
+    {
+      "advisory": "CVE-2026-84243",
+      "source_package": "glibc",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-84243",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "vulnerable",
+      "supported_fixed_version": null,
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-wbt",
+      "exposure_assessment": "No gettext/text-domain imports; LC_ALL=C and LANG=C; HTTP does not control process environment or message catalogs.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-5435",
+      "source_package": "glibc",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-5435",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "vulnerable; no-dsa",
+      "supported_fixed_version": null,
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-w9n",
+      "exposure_assessment": "No deprecated DNS-printing imports; normal hostname resolution does not print DNS records using these interfaces.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-19499",
+      "source_package": "glibc",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-19499",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "vulnerable; no-dsa",
+      "supported_fixed_version": null,
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-w9n",
+      "exposure_assessment": "No strfmon/strfmon_l imports; currency display uses browser formatting.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-85091",
+      "source_package": "zlib",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-85091",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "trixie-security fixed",
+      "supported_fixed_version": "1:1.3.dfsg+really1.3.1-1+deb13u1",
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-dd1 / bitcoin_price_tracker-he8",
+      "exposure_assessment": "Existing exact images retain old zlib; no libz linkage or gzip-writing API. Supported Debian fix now exists but current distroless tag has not integrated it.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-95619",
+      "source_package": "gcc-14",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "vulnerable; no-dsa",
+      "supported_fixed_version": null,
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-hcw",
+      "exposure_assessment": "No C++ imports, libstdc++ or libgomp linkage; libgcc unwinding does not implement the affected aligned C++ allocation operator.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-102010",
+      "source_package": "gcc-14",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "vulnerable; no-dsa",
+      "supported_fixed_version": null,
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-hcw",
+      "exposure_assessment": "No C++ imports, libstdc++ or libgomp linkage; no C++ priority-queue erase_if use.",
+      "decision": "Retain existing matcher pending supported image fix/removal; no renewal"
+    },
+    {
+      "advisory": "CVE-2026-76844",
+      "source_package": "zlib",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-76844",
+      "review_date_utc": "2026-11-07",
+      "supported_status": "trixie-security fixed",
+      "supported_fixed_version": "1:1.3.dfsg+really1.3.1-1+deb13u1",
+      "owner": "ggaddy",
+      "removal_tracking": "bitcoin_price_tracker-he8",
+      "exposure_assessment": "New unaccepted High finding; no libz linkage, but this CVE includes blocking write failures and gzclearerr in older versions. No inherited exception or deadline extension.",
+      "decision": "Unaccepted; strict scan remains failing"
+    }
+  ],
+  "validation": {
+    "deadline_boundaries": [
+      {
+        "policy_deadline": "2026-11-10",
+        "date": "2026-11-09",
+        "result": "pass"
+      },
+      {
+        "policy_deadline": "2026-11-10",
+        "date": "2026-11-10",
+        "result": "Image advisory review expired on 2026-11-10; recheck exposure and available updates"
+      },
+      {
+        "policy_deadline": "2026-11-10",
+        "date": "2026-11-11",
+        "result": "Image advisory review expired on 2026-11-10; recheck exposure and available updates"
+      },
+      {
+        "policy_deadline": "2026-12-02",
+        "date": "2026-12-01",
+        "result": "pass"
+      },
+      {
+        "policy_deadline": "2026-12-02",
+        "date": "2026-12-02",
+        "result": "Image advisory review expired on 2026-12-02; recheck exposure and available updates"
+      },
+      {
+        "policy_deadline": "2026-12-02",
+        "date": "2026-12-03",
+        "result": "Image advisory review expired on 2026-12-02; recheck exposure and available updates"
+      }
+    ],
+    "cargo_audit": {
+      "command": "cargo-audit audit --file Cargo.lock --deny warnings --json",
+      "version": "0.22.2",
+      "official_release_archive_sha256": "ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39",
+      "exit_code": 0,
+      "report": {
+        "database": {
+          "advisory-count": 1422,
+          "last-commit": "309392b18f6b17022f82c701f300433126901068",
+          "last-updated": "2026-11-06T16:34:32+01:00"
+        },
+        "lockfile": {
+          "dependency-count": 207
+        },
+        "settings": {
+          "target_arch": [],
+          "target_os": [],
+          "severity": null,
+          "ignore": [],
+          "informational_warnings": [
+            "unmaintained",
+            "unsound",
+            "notice"
+          ]
+        },
+        "vulnerabilities": {
+          "found": false,
+          "count": 0,
+          "list": []
+        },
+        "warnings": {}
+      }
+    },
+    "npm_audit": {
+      "command": "npm audit --prefix tests/browser --audit-level=low --json",
+      "exit_code": 0,
+      "report": {
+        "auditReportVersion": 2,
+        "vulnerabilities": {},
+        "metadata": {
+          "vulnerabilities": {
+            "info": 0,
+            "low": 0,
+            "moderate": 0,
+            "high": 0,
+            "critical": 0,
+            "total": 0
+          },
+          "dependencies": {
+            "prod": 1,
+            "dev": 2,
+            "optional": 0,
+            "peer": 0,
+            "peerOptional": 0,
+            "total": 2
+          }
+        }
+      }
+    },
+    "strict_policy": "All three images fail --fail-on high with exit 2 on real unaccepted CVE-2026-76844 using both checked-in and pre-existing draft configs. No filters or exceptions added; show-suppressed remains true.",
+    "runtime_checks": "Candidate and published full verifier exit 0; identical executable hashes; reviewed libc/libm/libgcc_s/loader linkage only; LC_ALL=C, no C++/gettext imports. dlopen/dlsym remain, so this is not a proof about every indirect native path.",
+    "rust_browser_tests": "Not rerun: this review changes security documentation/evidence only; application, dependencies, runtime image pins and scanner policy are unchanged."
+  },
+  "reproduction_commands": [
+    "grype db update",
+    "grype db status -o json",
+    "podman build --format docker --tag localhost/btc-advisory-review:20261107 .",
+    "podman save --format docker-archive --output candidate.docker.tar localhost/btc-advisory-review:20261107",
+    "python3 scripts/verify_runtime.py --engine podman --image localhost/btc-advisory-review:20261107",
+    "python3 scripts/verify_runtime.py --engine podman --image docker.io/agaddy/bitcoin_price_tracker@sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc",
+    "GRYPE_DB_AUTO_UPDATE=false grype docker-archive:candidate.docker.tar --config .grype.yaml --fail-on high --output json",
+    "GRYPE_DB_AUTO_UPDATE=false grype registry:docker.io/agaddy/bitcoin_price_tracker@sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc --config .grype.yaml --fail-on high --output json",
+    "skopeo copy docker://gcr.io/distroless/cc-debian13@sha256:65af2e9e44e71de2df28245f6814301775d3ef04436b7d563f240d86fedf24aa oci:latest-base:review",
+    "GRYPE_DB_AUTO_UPDATE=false grype oci-dir:latest-base --config .grype.yaml --fail-on high --output json",
+    "cargo-audit audit --file Cargo.lock --deny warnings --json",
+    "npm audit --prefix tests/browser --audit-level=low --json"
+  ]
+}

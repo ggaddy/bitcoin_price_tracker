@@ -51,9 +51,12 @@ The authoritative exception matchers and review deadline are in
 [.grype.yaml](.grype.yaml). The checked-in deadline is **2026-11-10**; review must
 finish before that date. [The deadline checker](scripts/check_image_exceptions.py)
 fails CI/release checks on or after expiry. Owner: repository maintainer `ggaddy`.
-Beads issue `bitcoin_price_tracker-5wx` tracks the next review;
+Beads issue `bitcoin_price_tracker-fmq` tracks the outstanding full review;
 `bitcoin_price_tracker-wbt` and [GitHub #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40)
-track removal of the CVE-2026-84243 exception.
+track removal of the CVE-2026-84243 exception. The other removal tasks are
+`bitcoin_price_tracker-w9n` (other libc), `bitcoin_price_tracker-dd1` (zlib),
+and `bitcoin_price_tracker-hcw` (GCC/C++). `bitcoin_price_tracker-he8` tracks
+the new, unaccepted High zlib finding and the supported zlib update.
 
 Retained exceptions are applicability decisions, not patched packages or a clean
 scan. Match only the reviewed advisory, Debian binary package, and exact version;
@@ -67,8 +70,9 @@ executable for reviewed native imports and linked libraries, rejects C++/gettext
 imports, and requires `LC_ALL=C`. These guards support the exposure reviews; they
 do not prove every indirect or dynamically loaded library path safe. A review
 must also check fresh scan/vendor evidence for both the candidate and published
-images. This documentation cleanup does not renew any exception or establish
-current upstream fix availability.
+images. The [November 7 assessment](#november-7-2026-runtime-advisory-assessment)
+records a failing strict scan on a new zlib finding. It does not renew any
+exception or extend the checked-in deadline.
 
 ## Recorded dependency and applicability reviews
 
@@ -239,6 +243,79 @@ proving that every indirect library path is safe. Remove the exception when a
 supported base fixes/removes the package, and reassess it if localization,
 native dependencies, process-environment handling, or runtime settings change.
 Other findings remain visible and the High/Critical threshold is unchanged.
+
+### November 7, 2026 runtime advisory assessment
+
+Reviewed on **2026-11-07 UTC** for `bitcoin_price_tracker-o6i`. Owner: `ggaddy`.
+The [machine-readable evidence](docs/security/runtime-review-2026-11-07.json)
+records exact image identities, build-input and executable hashes, all findings,
+vendor assessments, runtime verification, advisory checks, and commands. The
+candidate was built from clean `origin/master` revision
+`bcce713da4065b16b87a8676110d43aaea078e9f` in an isolated worktree; existing
+edits in the original checkout were preserved. No production state was inspected.
+
+**Strict image scanning fails.** Grype **0.118.0** (Syft **1.51.1**) refreshed
+successfully to schema `v6.1.10`, built **2026-11-07T06:18:48Z**, archive SHA-256
+`f90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a`.
+Database age validation remained enabled. Each Linux/amd64 image reports the
+same **45 package/advisory matches**: 13 High, 22 Medium, 3 Low, and 7 Negligible.
+Twelve High matches use the existing exceptions; **CVE-2026-76844** is an
+unaccepted High match. All three `--fail-on high` scans exit **2**, with
+`discovered vulnerabilities at or above the severity threshold`. Both the
+committed policy and the pre-existing local draft produce this result.
+
+| Image | Exact identity |
+| --- | --- |
+| Local candidate, built with locked dependencies and the pinned Dockerfile | Podman manifest `sha256:1f691fa66f1c8262a35739d0d520be2a5bb63c073ba86f1bfa83fb2d5cf4a684`; configuration/image ID `sha256:213fc88222ea87536ac3fd7056f6150f02bdb370c5bca25dd3b79138b4f9d43d` |
+| Published `latest`, still v2.9.7 at resolution | Registry manifest `sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc` |
+| Latest supported distroless `cc-debian13:nonroot` | Index `sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1`; amd64 manifest `sha256:65af2e9e44e71de2df28245f6814301775d3ef04436b7d563f240d86fedf24aa` |
+
+`podman save --format docker-archive` preserves the candidate's configuration
+ID and filesystem. Grype's archive manifest identity is
+`sha256:55dc26ba4cac500627eaaafe71bc13f45ea29e90f8b4f78b8500f807b34bd3c6`;
+the evidence distinguishes it from the local Podman manifest.
+
+The six existing advisory exceptions were reassessed individually:
+
+| Advisory | Exact binary package/version | Assessment and removal tracking |
+| --- | --- | --- |
+| [CVE-2026-84243](https://security-tracker.debian.org/tracker/CVE-2026-84243) | `libc6` `2.41-12+deb13u4` | Trixie and unstable remain unfixed. Both application images use `LC_ALL=C`, `LANG=C`; their executables have no gettext/text-domain imports. HTTP cannot set process environment or catalog paths. Retain the existing matcher; `bitcoin_price_tracker-wbt`. |
+| [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435) | `libc6` `2.41-12+deb13u4` | Trixie remains vulnerable with `<no-dsa>`; the unstable fix is `2.43-3`. Neither executable imports the affected deprecated DNS-printing functions. Retain; `bitcoin_price_tracker-w9n`. |
+| [CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499) | `libc6` `2.41-12+deb13u4` | Trixie remains vulnerable with `<no-dsa>`; the unstable fix is `2.43-5`. Neither executable imports `strfmon`/`strfmon_l`; currency display uses browser formatting. Retain; `bitcoin_price_tracker-w9n`. |
+| [CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091) | `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` | **A supported trixie-security fix now exists:** `1:1.3.dfsg+really1.3.1-1+deb13u1`, recorded in [DSA-6613-1](https://security-tracker.debian.org/tracker/DSA-6613-1). The latest distroless tag still contains the old package. Neither executable links zlib or exposes gzip writes. Retain only for the existing affected images pending fix/removal; `bitcoin_price_tracker-dd1`, `bitcoin_price_tracker-he8`. |
+| [CVE-2026-95619](https://security-tracker.debian.org/tracker/CVE-2026-95619) | Each of `gcc-14-base`, `libgcc-s1`, `libgomp1`, `libstdc++6` at `14.2.0-19` (four matches) | Trixie GCC 14 remains vulnerable with `<no-dsa>`; unstable fixes it in `14.4.0-3`. Neither executable imports C++ symbols or links libstdc++/libgomp; the linked unwinder does not implement the affected C++ allocation operator. Retain; `bitcoin_price_tracker-hcw`. |
+| [CVE-2026-102010](https://security-tracker.debian.org/tracker/CVE-2026-102010) | The same four GCC binary packages at `14.2.0-19` (four matches) | Trixie remains vulnerable with `<no-dsa>`; unstable fixes it in `14.4.0-3`. No C++ priority-queue `erase_if` path, C++ imports, or libstdc++/libgomp linkage is used. Retain; `bitcoin_price_tracker-hcw`. |
+
+The new [CVE-2026-76844](https://security-tracker.debian.org/tracker/CVE-2026-76844)
+also affects the old zlib package. Its stale-buffer overflow follows failed gzip
+writes, including blocking descriptor failures; versions before 1.3.1.2 require
+a subsequent `gzclearerr()` call. The earlier nonblocking-write rationale must
+not be used to automatically waive this different advisory. Debian lists the
+same supported security update as its fix. Grype's captured database still
+reports no fixed version, so vendor evidence and image contents must both be
+checked. Updating only to the currently resolved distroless digest removes
+neither zlib finding. `bitcoin_price_tracker-he8` tracks a supported fix/removal
+and a fresh exact-image scan; no new exception is added.
+
+Full `verify_runtime.py` checks pass on both exact application images, including
+non-root/read-only operation, quote serving, persistence, health failure/recovery,
+bind mounts, shutdown, and native/locale guards. Their executables are identical
+(SHA-256 `7ecaaffb67799c11360bfa27e5436f44e5d19e48e7dca7f28e6f8748356d0b21`)
+and link only libc, libm, libgcc_s, and the loader. Bundled C SQLite/ring and
+Rustls remain the native/TLS dependencies; SQLite extension loading is not
+enabled. `dlopen`/`dlsym` imports remain, so these guards do not establish the
+safety of every indirect native path or patch the affected libraries.
+
+No matcher, image pin, threshold, or review deadline changes in this assessment.
+The committed policy still expires **2026-11-10**. The original checkout contains
+a pre-existing uncommitted **2026-12-02** draft, preserved separately; that draft
+does not change the committed deadline. Boundary checks confirm each policy
+fails on and after its own deadline. The outstanding full review
+`bitcoin_price_tracker-fmq` remains open pending the zlib remediation; this
+assessment is not a renewal. `cargo-audit` **0.22.2** with `--deny warnings`
+(verified official binary, 207 dependencies) and `npm audit --audit-level=low`
+pass with no accepted advisories. CI gates and suppressed-finding visibility
+remain unchanged. No image was published and no production rollout occurred.
 
 ## Application containment
 
