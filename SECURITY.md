@@ -22,8 +22,9 @@ fix is available. Do not suppress a scanner failure merely to make CI pass.
 
 ## Runtime images and release checks
 
-The runtime uses digest-pinned Debian 13 distroless `cc`, UID/GID 10001, and no
-shell or package manager. Dependabot checks Docker digests, Actions, Cargo, and
+The runtime copies a digest-pinned Debian 13 distroless `cc` filesystem after
+removing unused OpenSSL/zlib packages, runs as UID/GID 10001, and has no shell or
+package manager. Dependabot checks Docker digests, Actions, Cargo, and
 browser dependencies weekly. Deployments must still enforce a read-only root,
 drop capabilities, disable privilege escalation and API token mounts, and restrict
 network access; an image alone does not provide workload isolation.
@@ -53,10 +54,11 @@ finish before that date. [The deadline checker](scripts/check_image_exceptions.p
 fails CI/release checks on or after expiry. Owner: repository maintainer `ggaddy`.
 Beads issue `bitcoin_price_tracker-fmq` tracks the outstanding full review;
 `bitcoin_price_tracker-wbt` and [GitHub #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40)
-track removal of the CVE-2026-84243 exception. The other removal tasks are
-`bitcoin_price_tracker-w9n` (other libc), `bitcoin_price_tracker-dd1` (zlib),
-and `bitcoin_price_tracker-hcw` (GCC/C++). `bitcoin_price_tracker-he8` tracks
-the new, unaccepted High zlib finding and the supported zlib update.
+track removal of the CVE-2026-84243 exception. Remaining removal tasks are
+`bitcoin_price_tracker-w9n` (other libc) and `bitcoin_price_tracker-hcw` (GCC/C++).
+The [zlib remediation](#november-7-2026-zlib-remediation) removes the old zlib
+exception and passes strict scanning locally. `bitcoin_price_tracker-31u` tracks
+releasing and verifying the replacement for the still-affected published image.
 
 Retained exceptions are applicability decisions, not patched packages or a clean
 scan. Match only the reviewed advisory, Debian binary package, and exact version;
@@ -71,8 +73,8 @@ imports, and requires `LC_ALL=C`. These guards support the exposure reviews; the
 do not prove every indirect or dynamically loaded library path safe. A review
 must also check fresh scan/vendor evidence for both the candidate and published
 images. The [November 7 assessment](#november-7-2026-runtime-advisory-assessment)
-records a failing strict scan on a new zlib finding. It does not renew any
-exception or extend the checked-in deadline.
+records the original failing scan; the [subsequent remediation](#november-7-2026-zlib-remediation)
+passes the local candidate scan. Neither extends the checked-in deadline.
 
 ## Recorded dependency and applicability reviews
 
@@ -316,6 +318,69 @@ assessment is not a renewal. `cargo-audit` **0.22.2** with `--deny warnings`
 (verified official binary, 207 dependencies) and `npm audit --audit-level=low`
 pass with no accepted advisories. CI gates and suppressed-finding visibility
 remain unchanged. No image was published and no production rollout occurred.
+
+### November 7, 2026 zlib remediation
+
+Local remediation for `bitcoin_price_tracker-he8` and `bitcoin_price_tracker-dd1`.
+Owner: `ggaddy`. The [remediation evidence](docs/security/zlib-remediation-2026-11-07.json)
+records the exact candidate, scan results, package-file comparison and controls.
+This subsection supersedes the earlier assessment's local-candidate failure;
+that historical image and its evidence are preserved.
+
+The latest supported distroless digest still includes the affected zlib package.
+Debian's trixie-security backport `1:1.3.dfsg+really1.3.1-1+deb13u1` is available
+and its archive checksum was verified through signed Debian security indexes.
+However, Grype's current database still reports both zlib High advisories against
+that backport. No exception or scanner-database modification is used to bypass
+this discrepancy.
+
+The service uses Rustls and does not need OpenSSL or zlib. `libcrypto.so.3` from
+the base's unused `libssl3t64` package is its only retained ELF consumer of
+`libz.so.1`. The Dockerfile therefore removes both complete packages from an
+intermediate root filesystem and copies that filesystem into `scratch`. It
+checks the reviewed original package versions, verifies their owned files using
+the base's checksum manifests, and removes the actual libraries, engines,
+symlink, documentation and package metadata. A `readelf` check rejects any
+remaining shared-library dependency on libz, libssl or libcrypto. A base package
+change fails the recipe and requires review; removal is not applied blindly to
+a future base version. The final image contains no earlier untrimmed base layer.
+
+The filesystem comparison confirms **22 package entries removed**, **1,737 entries
+unchanged**, and no added or changed entries, excluding container-generated
+hosts/hostname/resolver files. The executable and CA bundle remain byte-identical;
+the reviewed imports, linked libraries, user, environment, health check, command
+and shutdown signal remain intact. Runtime verification now independently
+exports the exact image filesystem and rejects leftover OpenSSL/zlib files.
+
+The Linux/amd64 candidate `localhost/btc-zlib-remediation:20261107` has image ID
+`sha256:699e495afd0b19d039bbb6fd010a8e7f3952976a1b79fbf827e02f1ac5e6880f`
+and Podman manifest
+`sha256:e3da2f2695e8503987ae512237a84a7b06badff2741d267bb769908b84ff60d5`.
+Its Docker-archive scan manifest is
+`sha256:8d690d5197d00a8d08df42110613f89703a4f2b21925075232e909785345bb49`.
+Grype 0.118.0 with the unchanged November 7 database passes `--fail-on high`
+with **exit 0**: 42 total matches, comprising **11 existing suppressed High**,
+21 Medium, 3 Low and 7 Negligible. Neither `zlib1g` nor either zlib advisory
+appears. The CVE-2026-85091 matcher is removed; no matcher is added or broadened.
+The remaining five advisories retain their earlier exact package/version
+assessments and removal tracking. Suppressed findings remain visible, the
+High/Critical threshold stays strict, and the deadline remains **2026-11-10**.
+
+Full exact-image runtime verification passes. The original image fails the new
+filesystem guard. A temporary control policy omitting only CVE-2026-84243 makes
+the remediated image's strict scan fail with exit 2 on that real High finding.
+Pinned Rust 1.85.1 formatting and Clippy pass; Rust tests report 109 passed and
+one optional Selenium test ignored. Strict RustSec and npm audits pass without
+exceptions. No dashboard code changed.
+
+Published `latest` still resolves to v2.9.7 manifest
+`sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc`.
+It still contains the old packages and fails the reduced policy with exit 2 on
+both CVE-2026-76844 and CVE-2026-85091. The weekly published-image check must
+continue reporting that failure until an authorized release replaces the image;
+`bitcoin_price_tracker-31u` tracks that follow-up. The broader review
+`bitcoin_price_tracker-fmq` remains open. No exception deadline is renewed, and
+this local remediation does not publish an image or establish a production rollout.
 
 ## Application containment
 
