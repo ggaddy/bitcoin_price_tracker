@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import subprocess
+import tarfile
 import time
 import tempfile
 from pathlib import Path
@@ -55,6 +56,15 @@ try:
     # AUD-07 exceptions depend on these interfaces remaining unused. Inspect the
     # exact image binary, not a separately built host executable.
     with tempfile.TemporaryDirectory(prefix='btc-symbol-review-') as directory:
+        rootfs = str(Path(directory) / 'rootfs.tar')
+        command('export', '--output', rootfs, container)
+        with tarfile.open(rootfs) as filesystem:
+            unused_files = [entry.name for entry in filesystem
+                            if Path(entry.name).name.startswith(('libz.so', 'libssl.so', 'libcrypto.so',
+                                                                'zlib1g', 'libssl3t64'))
+                            or {'zlib1g', 'libssl3t64'} & set(Path(entry.name).parts)]
+        assert not unused_files, f'Runtime must omit unused zlib/OpenSSL files: {sorted(unused_files)}'
+        print('Unused zlib/OpenSSL libraries, documentation and package metadata are absent.')
         binary = str(Path(directory) / 'bitcoin_price_tracker')
         command('cp', container + ':/usr/local/bin/bitcoin_price_tracker', binary)
         symbols = subprocess.run(['readelf', '--dyn-syms', '--wide', binary],

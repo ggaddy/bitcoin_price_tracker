@@ -84,9 +84,11 @@ continue to revalidate.
 
 ## Container
 
-The final image runs as UID/GID **10001:10001** on digest-pinned distroless Debian
-13, without a shell, package manager, or Rust build tools. A named volume is
-initialized with a writable data directory:
+The final image runs as UID/GID **10001:10001** on a filesystem derived from
+digest-pinned distroless Debian 13, without a shell, package manager, or Rust
+build tools. The Dockerfile removes unused OpenSSL and zlib packages before
+assembling the final image; TLS uses Rustls. A named volume is initialized with
+a writable data directory:
 
 ```bash
 docker build -t btc-matrix .
@@ -256,9 +258,10 @@ python3 scripts/verify_runtime.py --engine docker --image btc-matrix
 ```
 
 The script uses disposable containers/volumes and a version-tagged Python helper
-image. It checks exact-image native imports, locale guards, non-root startup,
-health, seeded quotes, restart persistence, storage failure/recovery, bind mounts,
-and shutdown. The application has no external network during these checks; the
+image. It checks that removed OpenSSL/zlib files stay absent, exact-image native
+imports, locale guards, non-root startup, health, seeded quotes, restart
+persistence, storage failure/recovery, bind mounts, and shutdown. The application
+has no external network during these checks; the
 helper image is pulled before readiness checks. Cleanup removes its own resources.
 
 The separate Rust Selenium smoke test needs Docker or Podman and Python 3,
