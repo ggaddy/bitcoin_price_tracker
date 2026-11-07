@@ -8,28 +8,10 @@ FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe
 
 FROM builder AS runtime-rootfs
 COPY --from=runtime-base / /runtime-rootfs/
-# TLS uses Rustls; unused OpenSSL is the base's only consumer of zlib.
-# Remove both packages' actual files, not just scanner metadata.
-# A changed base package must be reviewed before this removal recipe is reused.
-RUN set -eu; \
-    cd /runtime-rootfs; \
-    grep -Fx 'Version: 1:1.3.dfsg+really1.3.1-1+b1' var/lib/dpkg/status.d/zlib1g; \
-    grep -Fx 'Version: 3.5.7-1~deb13u3' var/lib/dpkg/status.d/libssl3t64; \
-    for package in libssl3t64 zlib1g; do \
-        md5sum --check --strict "var/lib/dpkg/status.d/$package.md5sums"; \
-        while read -r checksum path; do \
-            test -n "$path" || continue; \
-            rm -f -- "$path"; \
-        done < "var/lib/dpkg/status.d/$package.md5sums"; \
-        rmdir "usr/share/doc/$package"; \
-        rm -f "var/lib/dpkg/status.d/$package" "var/lib/dpkg/status.d/$package.md5sums"; \
-    done; \
-    find usr/lib -type l -name libz.so.1 -delete; \
-    find usr/lib -type f -name '*.so*' -exec readelf --dynamic --wide {} + > /tmp/runtime-needed; \
-    if grep -E '\(NEEDED\).*\[lib(z|ssl|crypto)\.so' /tmp/runtime-needed; then \
-        echo 'Retained runtime libraries require removed packages; review removal' >&2; exit 1; \
-    fi; \
-    test -z "$(find usr/lib \( -name 'libz.so*' -o -name 'libssl.so*' -o -name 'libcrypto.so*' \) -print -quit)"
+COPY scripts/prune_runtime.py /usr/local/bin/prune_runtime.py
+# Keep the release ELF dependency closure and reviewed built-in DNS/files NSS.
+RUN python3 /usr/local/bin/prune_runtime.py --root /runtime-rootfs \
+    --executable /app/target/release/bitcoin_price_tracker --report /runtime-library-audit.json
 
 FROM scratch
 COPY --from=runtime-rootfs /runtime-rootfs/ /

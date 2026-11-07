@@ -23,9 +23,9 @@ fix is available. Do not suppress a scanner failure merely to make CI pass.
 ## Runtime images and release checks
 
 The runtime copies a digest-pinned Debian 13 distroless `cc` filesystem after
-removing unused OpenSSL/zlib packages, runs as UID/GID 10001, and has no shell or
-package manager. Dependabot checks Docker digests, Actions, Cargo, and
-browser dependencies weekly. Deployments must still enforce a read-only root,
+retaining only the executable's native dependency chain, runs as UID/GID 10001,
+and has no shell or package manager. Dependabot checks Docker digests, Actions,
+Cargo, and browser dependencies weekly. Deployments must still enforce a read-only root,
 drop capabilities, disable privilege escalation and API token mounts, and restrict
 network access; an image alone does not provide workload isolation.
 
@@ -56,8 +56,9 @@ Beads issue `bitcoin_price_tracker-fmq` tracks the outstanding full review;
 `bitcoin_price_tracker-wbt` and [GitHub #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40)
 track removal of the CVE-2026-84243 exception. Remaining removal tasks are
 `bitcoin_price_tracker-w9n` (other libc) and `bitcoin_price_tracker-hcw` (GCC/C++).
-The [zlib remediation](#november-7-2026-zlib-remediation) removes the old zlib
-exception and passes strict scanning locally. `bitcoin_price_tracker-31u` tracks
+The [library audit](#november-7-2026-complete-runtime-library-audit) removes the
+zlib and four unused GCC-package matchers and passes strict scanning locally.
+`bitcoin_price_tracker-31u` tracks
 releasing and verifying the replacement for the still-affected published image.
 
 Retained exceptions are applicability decisions, not patched packages or a clean
@@ -74,7 +75,8 @@ do not prove every indirect or dynamically loaded library path safe. A review
 must also check fresh scan/vendor evidence for both the candidate and published
 images. The [November 7 assessment](#november-7-2026-runtime-advisory-assessment)
 records the original failing scan; the [subsequent remediation](#november-7-2026-zlib-remediation)
-passes the local candidate scan. Neither extends the checked-in deadline.
+passes the local candidate scan. The [complete library audit](#november-7-2026-complete-runtime-library-audit)
+further reduces native modules and exceptions. None extends the checked-in deadline.
 
 ## Recorded dependency and applicability reviews
 
@@ -381,6 +383,82 @@ continue reporting that failure until an authorized release replaces the image;
 `bitcoin_price_tracker-31u` tracks that follow-up. The broader review
 `bitcoin_price_tracker-fmq` remains open. No exception deadline is renewed, and
 this local remediation does not publish an image or establish a production rollout.
+
+### November 7, 2026 complete runtime library audit
+
+Follow-up for `bitcoin_price_tracker-yhq`, based on merged PR #44 revision
+`64ce88c`. Owner: `ggaddy`. The [machine-readable library audit](docs/security/runtime-libraries-2026-11-07.json)
+records the complete before/after ELF inventory, package removal, retained
+dependency graph, image identities, hashes, verification and scanner controls.
+
+The PR #44 image still had **277 shared-library ELF files**. Three entire unused
+packages are now removed: `libstdc++6` and `libgomp1` `14.2.0-19`, and `libzstd1`
+`1.5.7+dfsg-1`. Unused libc compatibility, debugger/profiler, legacy NIS/NSS,
+vector-math and charset-conversion modules/tables are also removed. The new
+image contains the application and exactly these **four native libraries**:
+
+| Library | Why retained |
+| --- | --- |
+| `libc.so.6` | C runtime, allocator/threading and built-in host-file/DNS lookup |
+| `libm.so.6` | Directly linked numerical operations, including bundled SQLite |
+| `libgcc_s.so.1` | Directly linked Rust/GCC stack unwinding support |
+| `ld-linux-x86-64.so.2` | ELF interpreter and transitive dependency of all three libraries |
+
+This is a reviewed direct/transitive dependency closure, with additional review
+of indirect loading. In the pinned glibc 2.41 implementation,
+[files and DNS NSS backends are built into libc](https://github.com/bminor/glibc/blob/glibc-2.41/nss/nss_module.c).
+The image now explicitly configures `hosts: files dns` and `files` for other NSS
+databases, eliminating configurations referring to removed compat/NIS/database
+plugins. The release imports no iconv, gettext or locale-selection interfaces;
+`LC_ALL=C` remains required. Rust handles UTF-8 and SQLite uses its bundled
+encoding code. SQLite extension loading is not enabled or exposed. Future
+localization, NSS backends, native plugins or dependency changes require review;
+the release still imports `dlopen`/`dlsym`, so no general claim about arbitrary
+dynamic-loading configurations is made.
+
+`scripts/prune_runtime.py` checks reviewed package versions and owned-file
+checksums, removes complete unused packages, and derives the retained ELF
+dependency graph from the release executable/interpreter. Unexpected native
+dependencies fail the build. It removes other ELF and gconv files, keeps the
+`libc6` package identity/version and updates its owned-file manifest to describe
+the trimmed package accurately. `libgcc-s1` and its `gcc-14-base` dependency and
+licensing remain. The final image has no untrimmed earlier layer.
+
+Against the PR #44 image, **273 shared libraries** and **308 filesystem entries**
+are removed. Only NSS configuration and the libc ownership manifest change;
+**1,427 entries remain unchanged**, including the executable and CA bundle.
+The uncompressed image falls from **30,288,199 to 16,589,125 bytes (45.2%)**.
+The Linux/amd64 candidate is `localhost/btc-runtime-minimal:20261107`, image ID
+`sha256:d7fdd901cfadcfe85536ec167ad86839ab4c5e3f6e36fd9f54e633ea967ff2a0`,
+Podman manifest `sha256:a3cdda5cb59fda10affd2488f13b0e3c0b72ff4d11f0cf4918ee2fe37e68e4ea`.
+Other architectures were not runtime-tested in this review.
+
+Full exact-image application/runtime verification passes and independently
+requires the five-ELF inventory and built-in NSS configuration. The older PR #44
+image fails that guard on a gconv module. A separate helper using the production
+client builder and locked dependencies runs inside the immutable candidate
+image against isolated loopback fixtures: host-file lookup, DNS A/AAAA queries, trusted
+Rustls HTTPS, certificate-name rejection and untrusted-CA rejection all pass.
+After these operations `/proc/self/maps` contains only the four retained native
+libraries. The helper and private CA are not included in the release image.
+Both ordinary CI and release checks now enforce this network verification.
+
+The four exact CVE-2026-95619/CVE-2026-102010 matchers for removed `libstdc++6`
+and `libgomp1` are deleted. Grype 0.118.0 with the November 7 database passes
+`--fail-on high` with exit 0: **32 total matches**, comprising **7 retained High**,
+15 Medium, 3 Low and 7 Negligible. Remaining High matches are the three libc
+interfaces and two GCC-source advisories attributed to each of the retained
+`libgcc-s1`/`gcc-14-base` packages; their existing applicability assessments and
+removal tracking remain. No matcher is added or broadened. A temporary control
+omitting only CVE-2026-84243 fails with exit 2 on that real High finding.
+Suppressed findings stay visible and the **2026-11-10** deadline is unchanged.
+
+Pinned formatting/Clippy and 109 Rust tests pass (one optional Selenium test
+ignored), as do strict RustSec/npm audits. Published `latest` still resolves to
+v2.9.7 digest `sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10d120bc`;
+it remains affected and fails the reduced strict policy until an authorized
+release replaces it. `bitcoin_price_tracker-31u` tracks that release and
+`bitcoin_price_tracker-fmq` remains open. No image was published or deployed.
 
 ## Application containment
 

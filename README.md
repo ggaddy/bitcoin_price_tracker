@@ -86,8 +86,10 @@ continue to revalidate.
 
 The final image runs as UID/GID **10001:10001** on a filesystem derived from
 digest-pinned distroless Debian 13, without a shell, package manager, or Rust
-build tools. The Dockerfile removes unused OpenSSL and zlib packages before
-assembling the final image; TLS uses Rustls. A named volume is initialized with
+build tools. The Dockerfile keeps the executable's four-library native dependency
+chain, removing unused OpenSSL, compression, C++/OpenMP and libc modules before
+assembling the final image. TLS uses Rustls; libc supplies built-in host-file/DNS
+lookup, and `LC_ALL=C` is required. A named volume is initialized with
 a writable data directory:
 
 ```bash
@@ -258,11 +260,28 @@ python3 scripts/verify_runtime.py --engine docker --image btc-matrix
 ```
 
 The script uses disposable containers/volumes and a version-tagged Python helper
-image. It checks that removed OpenSSL/zlib files stay absent, exact-image native
-imports, locale guards, non-root startup, health, seeded quotes, restart
+image. It checks the complete five-ELF inventory (application plus four native
+libraries), retired-package absence, native imports, built-in NSS configuration,
+locale guards, non-root startup, health, seeded quotes, restart
 persistence, storage failure/recovery, bind mounts, and shutdown. The application
 has no external network during these checks; the
 helper image is pulled before readiness checks. Cleanup removes its own resources.
+
+Also verify the trimmed image's resolver and TLS behavior (host Python 3 and
+OpenSSL are required; no host Rust toolchain is needed):
+
+```bash
+python3 scripts/verify_runtime_network.py --engine docker --image btc-matrix
+```
+
+This compiles a separate validation helper with the pinned build stage and locked
+application dependencies. It runs inside the exact final image against loopback
+host-file, DNS and private-CA HTTPS fixtures with no external runtime
+network. DNS coverage includes A records and AAAA no-data fallback. It verifies
+certificate-name/untrusted-CA rejection and the libraries
+actually loaded after these operations. The helper is never shipped. CI and
+release verification run both scripts. New native dependencies, non-C locales,
+extra NSS backends or native plugins require a new library review.
 
 The separate Rust Selenium smoke test needs Docker or Podman and Python 3,
 but no host Cargo:
