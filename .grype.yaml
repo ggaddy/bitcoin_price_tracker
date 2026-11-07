@@ -28,16 +28,6 @@ ignore:
       name: libgcc-s1
       version: 14.2.0-19
       type: deb
-  - vulnerability: CVE-2026-95619
-    package:
-      name: libgomp1
-      version: 14.2.0-19
-      type: deb
-  - vulnerability: CVE-2026-95619
-    package:
-      name: '^libstdc\+\+6$'
-      version: 14.2.0-19
-      type: deb
   - vulnerability: CVE-2026-102010
     package:
       name: gcc-14-base
@@ -46,15 +36,5 @@ ignore:
   - vulnerability: CVE-2026-102010
     package:
       name: libgcc-s1
-      version: 14.2.0-19
-      type: deb
-  - vulnerability: CVE-2026-102010
-    package:
-      name: libgomp1
-      version: 14.2.0-19
-      type: deb
-  - vulnerability: CVE-2026-102010
-    package:
-      name: '^libstdc\+\+6$'
       version: 14.2.0-19
       type: deb
