@@ -1,13 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 pub(crate) mod source_contract;
 pub(crate) use source_contract::PriceResponse;
-
-#[derive(Clone, Serialize)]
-pub(crate) struct SourcePrice {
-    pub(crate) source: String,
-    pub(crate) price_usd: f64,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SnapshotRecord {
@@ -23,19 +15,4 @@ pub(crate) struct SnapshotRecord {
 pub(crate) struct StoredPriceState {
     pub(crate) snapshot: Option<SnapshotRecord>,
     pub(crate) provider_health: Vec<source_contract::ProviderHealth>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct PresencePayload {
-    pub(crate) session_id: String,
-    pub(crate) active: bool,
-    #[serde(default)]
-    pub(crate) include_price: bool,
-}
-
-#[derive(Serialize)]
-pub(crate) struct PresenceResponse {
-    pub(crate) active_viewers: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) price: Option<PriceResponse>,
 }

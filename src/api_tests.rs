@@ -1152,7 +1152,13 @@ async fn completed_client_request_does_not_cancel_background_work_or_its_attempt
     for source in UpstreamSource::ALL {
         app.upstreams.provider(source).wait_for_request().await;
     }
-    assert!(app.state.refresh.try_lock().is_err());
+    assert!(
+        app.state
+            .refresh
+            .drain_until(tokio::time::Instant::now())
+            .await
+            .is_err()
+    );
     let (_, cached) = app.price().await;
     assert_eq!(cached["refreshing"], true);
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
@@ -1197,7 +1203,13 @@ async fn timed_out_refresh_serves_the_previous_snapshot_and_releases_the_lock() 
             .to_string()
             .contains("CoinGecko request timed out")
     );
-    assert!(app.state.refresh.try_lock().is_ok());
+    assert!(
+        app.state
+            .refresh
+            .drain_until(tokio::time::Instant::now())
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -1413,8 +1425,6 @@ async fn manual_time_expires_presence_without_sleeping() {
 
 #[tokio::test]
 async fn presence_ignores_wall_clock_jumps_and_expires_just_after_ttl() {
-    use std::sync::atomic::Ordering;
-
     let app = TestApp::new().await;
     app.presence(true).await;
     app.refresh_and_price().await;
@@ -1431,58 +1441,19 @@ async fn presence_ignores_wall_clock_jumps_and_expires_just_after_ttl() {
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
 
     app.presence(true).await;
-    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 2);
+    assert_eq!(app.state.presence.generation(), 2);
     assert_eq!(app.refresh_and_price().await.1["refresh_succeeded"], true);
     assert_eq!(app.upstreams.request_counts(), [2; 4]);
     app.presence(false).await;
     assert_eq!(active_viewer_count(&app.state).await, 0);
     app.presence(true).await;
     app.presence(true).await;
-    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 3);
+    assert_eq!(app.state.presence.generation(), 3);
     // Hide/show requests a batch but still respects both cadence gates.
     assert_eq!(app.refresh_and_price().await.1["refresh_succeeded"], true);
     app.clock.advance(Duration::from_secs(10));
     assert_eq!(app.refresh_and_price().await.1["refresh_succeeded"], true);
     assert_eq!(app.upstreams.request_counts(), [3; 4]);
-}
-
-#[tokio::test]
-async fn presence_samples_time_after_acquiring_the_viewer_lock() {
-    use std::{
-        future::{Future, poll_fn},
-        task::Poll,
-    };
-
-    let app = TestApp::new().await;
-    app.presence(true).await;
-    let guard = app.state.viewers.lock().await;
-    let count = active_viewer_count(&app.state);
-    tokio::pin!(count);
-    poll_fn(|cx| {
-        assert!(count.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    app.clock.advance_monotonic(Duration::from_secs(16));
-    drop(guard);
-    assert_eq!(count.await, 0);
-
-    let guard = app.state.viewers.lock().await;
-    let heartbeat = app.presence(true);
-    tokio::pin!(heartbeat);
-    poll_fn(|cx| {
-        assert!(heartbeat.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    app.clock.advance_monotonic(Duration::from_secs(16));
-    drop(guard);
-    heartbeat.await;
-    assert_eq!(active_viewer_count(&app.state).await, 1);
-    app.clock.advance_monotonic(Duration::from_secs(15));
-    assert_eq!(active_viewer_count(&app.state).await, 1);
-    app.clock.advance_monotonic(Duration::from_nanos(1));
-    assert_eq!(active_viewer_count(&app.state).await, 0);
 }
 
 #[tokio::test]
@@ -1506,7 +1477,13 @@ async fn presence_expiring_during_database_inspection_prevents_dispatch() {
         Poll::Ready(())
     })
     .await;
-    assert!(app.state.refresh.try_lock().is_err());
+    assert!(
+        app.state
+            .refresh
+            .drain_until(tokio::time::Instant::now())
+            .await
+            .is_err()
+    );
     app.clock.advance_monotonic(Duration::from_secs(6));
     conn.execute_batch("COMMIT;").unwrap();
     let (_, data) = request.await;

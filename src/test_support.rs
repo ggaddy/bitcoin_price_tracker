@@ -20,8 +20,8 @@ use tokio::{net::TcpListener, sync::Semaphore, task::JoinHandle, time::timeout};
 use tower::ServiceExt;
 
 use crate::{
-    app::router,
     config::{UpstreamEndpoints, upstream_client_builder},
+    handlers::router,
     pricing::UpstreamSource,
     state::AppState,
     storage::init_db,
@@ -310,10 +310,11 @@ impl TestApp {
     }
 
     pub(crate) async fn wait_for_refresh(&self) {
-        let guard = timeout(Duration::from_secs(10), self.state.refresh.lock())
+        self.state
+            .refresh
+            .drain_until(tokio::time::Instant::now() + Duration::from_secs(10))
             .await
             .expect("background refresh completed");
-        drop(guard);
     }
 
     // Persistence/rotation regressions explicitly wait for background completion.

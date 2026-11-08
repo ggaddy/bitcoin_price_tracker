@@ -62,8 +62,8 @@ process-local. Kubernetes manifests and rollout evidence live in the separate
 | Area | Source |
 | --- | --- |
 | Startup, configuration, shared state | `src/main.rs`, `src/config.rs`, `src/state.rs` |
-| Routes, cached price responses, viewer admission | `src/app.rs`, `src/handlers.rs`, `src/presence.rs` |
-| Provider adapters and refresh coordination/backoff | `src/pricing.rs`, `src/refresh.rs` |
+| Routes and viewer admission | `src/handlers.rs`, `src/presence.rs` |
+| Provider adapters, cached prices and refresh coordination/backoff | `src/pricing.rs`, `src/refresh.rs` |
 | SQLite migration/transactions, models, freshness/aggregates | `src/storage.rs`, `src/models.rs`, `src/models/source_contract.rs`, `src/freshness.rs` |
 | Connection/request limits and shutdown | `src/lifecycle.rs`, `src/limits.rs` |
 | Embedded dashboard and security/cache headers | `src/ui.rs`, `src/ui.html`, `src/dashboard.js`, `src/dashboard.css`, `src/vendor` |

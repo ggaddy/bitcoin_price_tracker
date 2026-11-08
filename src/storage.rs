@@ -353,15 +353,6 @@ fn read_snapshot(
             SELECT source, price_usd, last_success_at_unix, quote_kind
             FROM source_prices
             WHERE snapshot_id = ?1
-            ORDER BY
-                CASE source
-                    WHEN 'CoinGecko' THEN 0
-                    WHEN 'Coinbase' THEN 1
-                    WHEN 'Kraken' THEN 2
-                    WHEN 'Gemini' THEN 3
-                    ELSE 99
-                END,
-                source ASC
             ",
         )
         .map_err(|error| format!("failed to prepare source lookup: {error}"))?;
@@ -383,6 +374,9 @@ fn read_snapshot(
     }
 
     drop(stmt);
+    sources.sort_by(|left, right| {
+        UpstreamSource::sort_key(&left.source).cmp(&UpstreamSource::sort_key(&right.source))
+    });
 
     Ok(Some(SnapshotRecord {
         fetched_at_unix,
@@ -449,8 +443,7 @@ fn write_provider_health(conn: &Connection, health: Vec<ProviderHealth>) -> Resu
 fn read_provider_health(conn: &Connection) -> Result<Vec<ProviderHealth>, String> {
     let mut stmt = conn.prepare(
         "SELECT source, attempt_outcome, attempted_at_unix, error_category, error_message, http_status
-         FROM provider_health ORDER BY CASE source
-             WHEN 'CoinGecko' THEN 0 WHEN 'Coinbase' THEN 1 WHEN 'Kraken' THEN 2 WHEN 'Gemini' THEN 3 ELSE 99 END, source"
+         FROM provider_health"
     ).map_err(|error| format!("failed to prepare provider health lookup: {error}"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -476,8 +469,13 @@ fn read_provider_health(conn: &Connection) -> Result<Vec<ProviderHealth>, String
             })
         })
         .map_err(|error| format!("failed to query provider health: {error}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode provider health: {error}"))
+    let mut health = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode provider health: {error}"))?;
+    health.sort_by(|left, right| {
+        UpstreamSource::sort_key(&left.source).cmp(&UpstreamSource::sort_key(&right.source))
+    });
+    Ok(health)
 }
 
 fn open_connection(db_path: &Path) -> Result<Connection, String> {
@@ -1080,6 +1078,85 @@ mod tests {
 
         drop(conn);
         fs::remove_file(&db_path).unwrap();
+    }
+
+    #[test]
+    fn stored_quotes_and_health_share_provider_order_with_sorted_legacy_extras() {
+        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+
+        let db_path = temp_db_path("provider-order");
+        init_db_sync(&db_path).unwrap();
+        let mut snapshot = snapshot_for_test(10);
+        snapshot.sources = [
+            "ZLegacy",
+            "Kraken",
+            "Coinbase",
+            "Gemini",
+            "ALegacy",
+            "CoinGecko",
+        ]
+        .into_iter()
+        .map(|source| StoredQuote {
+            source: source.into(),
+            price_usd: 100.0,
+            last_success_at_unix: Some(9),
+            quote_kind: QuoteKind::Unknown,
+        })
+        .collect();
+        let health = snapshot
+            .sources
+            .iter()
+            .rev()
+            .map(|quote| ProviderHealth {
+                source: quote.source.clone(),
+                last_attempt: LastAttempt::Success {
+                    attempted_at_unix: 8,
+                },
+            })
+            .collect();
+        super::store_refresh_sync(&db_path, Some(snapshot), health).unwrap();
+        let stored = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
+        let expected = [
+            "CoinGecko",
+            "Coinbase",
+            "Kraken",
+            "Gemini",
+            "ALegacy",
+            "ZLegacy",
+        ];
+        let snapshot = stored.snapshot.unwrap();
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .map(|quote| quote.source.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            stored
+                .provider_health
+                .iter()
+                .map(|record| record.source.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            snapshot
+                .sources
+                .iter()
+                .all(|quote| quote.last_success_at_unix == Some(9))
+        );
+        assert!(
+            stored
+                .provider_health
+                .iter()
+                .all(|record| record.last_attempt
+                    == LastAttempt::Success {
+                        attempted_at_unix: 8
+                    })
+        );
+        std::fs::remove_file(db_path).unwrap();
     }
 
     #[test]

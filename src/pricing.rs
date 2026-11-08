@@ -6,12 +6,16 @@ use tokio::join;
 use crate::{
     config::{UPSTREAM_BODY_LIMIT, UpstreamEndpoints},
     errors::{ProviderError, ProviderErrorKind, RefreshError, RetryAfter},
+    models::SnapshotRecord,
     models::source_contract::{LastAttempt, ProviderHealth, QuoteKind, StoredQuote},
-    models::{SnapshotRecord, SourcePrice},
-    refresh::RefreshPlan,
     state::AppState,
     storage::store_refresh,
 };
+
+struct SourcePrice {
+    source: String,
+    price_usd: f64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UpstreamSource {
@@ -31,6 +35,18 @@ impl UpstreamSource {
             Self::Kraken => "Kraken",
             Self::Gemini => "Gemini",
         }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        Self::ALL.iter().position(|source| *source == self).unwrap()
+    }
+
+    pub(crate) fn sort_key(name: &str) -> (usize, &str) {
+        let index = Self::ALL
+            .iter()
+            .position(|source| source.name() == name)
+            .unwrap_or(Self::ALL.len());
+        (index, name)
     }
 
     fn quote_kind(self) -> QuoteKind {
@@ -234,9 +250,9 @@ pub(crate) struct RefreshOutcome {
 pub(crate) async fn refresh_snapshot(
     state: &AppState,
     latest_snapshot: Option<SnapshotRecord>,
-    plan: &RefreshPlan,
+    sources: &[UpstreamSource],
 ) -> RefreshOutcome {
-    let results = fetch_selected_sources(state, &plan.sources).await;
+    let results = fetch_selected_sources(state, sources).await;
     let mut refreshed = Vec::new();
     let mut failures = Vec::new();
     let mut health = Vec::new();
@@ -274,7 +290,7 @@ pub(crate) async fn refresh_snapshot(
     RefreshOutcome { failures, stored }
 }
 
-async fn fetch_round_robin_source(
+async fn fetch_source(
     client: &Client,
     endpoints: &UpstreamEndpoints,
     source: UpstreamSource,
@@ -295,7 +311,7 @@ async fn fetch_selected_sources(
         if sources.contains(&source) {
             let started = std::time::Instant::now();
             let attempted_at_unix = state.clock.now_unix();
-            let result = fetch_round_robin_source(&state.client, &state.endpoints, source).await;
+            let result = fetch_source(&state.client, &state.endpoints, source).await;
             tracing::info!(
                 provider = source.name(),
                 duration_ms = started.elapsed().as_millis() as u64,
@@ -355,22 +371,10 @@ fn merge_snapshot_sources(
     for refreshed_price in refreshed_prices {
         source_prices.insert(refreshed_price.source.clone(), refreshed_price);
     }
-    ordered_sources(source_prices)
-}
-
-fn ordered_sources(mut source_prices: HashMap<String, StoredQuote>) -> Vec<StoredQuote> {
-    let mut sources = Vec::new();
-
-    for source in UpstreamSource::ALL {
-        if let Some(quote) = source_prices.remove(source.name()) {
-            sources.push(quote);
-        }
-    }
-
-    let mut extras: Vec<_> = source_prices.into_values().collect();
-    extras.sort_by(|left, right| left.source.cmp(&right.source));
-    sources.extend(extras);
-
+    let mut sources: Vec<_> = source_prices.into_values().collect();
+    sources.sort_by(|left, right| {
+        UpstreamSource::sort_key(&left.source).cmp(&UpstreamSource::sort_key(&right.source))
+    });
     sources
 }
 
@@ -405,7 +409,7 @@ mod tests {
         time,
     };
 
-    use super::{UpstreamSource, decode_response, fetch_json, fetch_round_robin_source};
+    use super::{UpstreamSource, decode_response, fetch_json, fetch_source};
     use crate::{
         config::{UPSTREAM_CONNECT_TIMEOUT, UPSTREAM_REQUEST_TIMEOUT, upstream_client_builder},
         errors::{ProviderErrorKind, RetryAfter},
@@ -455,7 +459,7 @@ mod tests {
         let app = TestApp::new().await;
         let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
         let fetch = || {
-            fetch_round_robin_source(
+            fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::CoinGecko,
@@ -507,7 +511,7 @@ mod tests {
         let app = TestApp::new().await;
         let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
         let release = provider.hold_responses();
-        let fetch = fetch_round_robin_source(
+        let fetch = fetch_source(
             &app.state.client,
             &app.state.endpoints,
             UpstreamSource::CoinGecko,
@@ -629,7 +633,7 @@ mod tests {
             app.upstreams
                 .provider(source)
                 .set_response(FixtureResponse::json(json!({})));
-            let error = fetch_round_robin_source(&app.state.client, &app.state.endpoints, source)
+            let error = fetch_source(&app.state.client, &app.state.endpoints, source)
                 .await
                 .err()
                 .expect("expected a schema error");
@@ -656,7 +660,7 @@ mod tests {
             json!({"base": 42, "currency": "USD", "amount": "1000"}),
         ] {
             provider.set_response(FixtureResponse::json(json!({"data": data})));
-            let error = fetch_round_robin_source(
+            let error = fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Coinbase,
@@ -674,7 +678,7 @@ mod tests {
             json!({"data": {"currency": "USD", "amount": "100000"}}),
         ));
         assert_eq!(
-            fetch_round_robin_source(
+            fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Coinbase
@@ -694,7 +698,7 @@ mod tests {
             "AETHZUSD": {"c": ["10"]}, "XXBTZUSD": {"c": ["100000"]}
         }})));
         assert_eq!(
-            fetch_round_robin_source(
+            fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Kraken
@@ -713,7 +717,7 @@ mod tests {
             json!({"error": [], "result": {"XXBTZUSD": {"c": [100000]}}}),
         ] {
             provider.set_response(FixtureResponse::json(body));
-            let error = fetch_round_robin_source(
+            let error = fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Kraken,
@@ -738,7 +742,7 @@ mod tests {
             json!({"symbol": null, "bid": "1000"}),
         ] {
             provider.set_response(FixtureResponse::json(body));
-            let error = fetch_round_robin_source(
+            let error = fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Gemini,
@@ -755,7 +759,7 @@ mod tests {
             json!({"symbol": "btcusd", "bid": "100000"}),
         ));
         assert_eq!(
-            fetch_round_robin_source(
+            fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::Gemini
@@ -775,7 +779,7 @@ mod tests {
             let mut response = FixtureResponse::json(json!({}));
             response.body = format!("{{\"bitcoin\":{{\"usd\":{number}}}}}");
             provider.set_response(response);
-            let error = fetch_round_robin_source(
+            let error = fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::CoinGecko,
@@ -790,7 +794,7 @@ mod tests {
         }
         provider.set_response(FixtureResponse::json(json!({"bitcoin": {"eur": 100000}})));
         assert!(
-            fetch_round_robin_source(
+            fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::CoinGecko
@@ -831,11 +835,10 @@ mod tests {
                 app.upstreams
                     .provider(source)
                     .set_response(FixtureResponse::json(body));
-                let error =
-                    fetch_round_robin_source(&app.state.client, &app.state.endpoints, source)
-                        .await
-                        .err()
-                        .expect("expected an invalid price");
+                let error = fetch_source(&app.state.client, &app.state.endpoints, source)
+                    .await
+                    .err()
+                    .expect("expected an invalid price");
                 assert_eq!(error.provider, source);
                 assert!(
                     matches!(error.kind, ProviderErrorKind::InvalidPrice { .. }),
@@ -847,7 +850,7 @@ mod tests {
             app.upstreams
                 .provider(UpstreamSource::CoinGecko)
                 .set_response(FixtureResponse::json(json!({"bitcoin": {"usd": amount}})));
-            let error = fetch_round_robin_source(
+            let error = fetch_source(
                 &app.state.client,
                 &app.state.endpoints,
                 UpstreamSource::CoinGecko,

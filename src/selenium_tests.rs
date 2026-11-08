@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use thirtyfour::prelude::*;
 
-use crate::{app::router, test_support::TestApp};
+use crate::{handlers::router, test_support::TestApp};
 
 fn browser_test_host() -> String {
     std::env::var("SELENIUM_APP_HOST").unwrap_or_else(|_| "host.containers.internal".to_string())
