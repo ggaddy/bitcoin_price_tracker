@@ -1,8 +1,8 @@
 use crate::{
     config::SOURCE_MAX_AGE_SECONDS,
-    models::source_contract::{
+    models::{
         AggregateCoverage, LastAttempt, PriceStatus, ProviderHealth, SourceFreshness,
-        SourceResponse, StoredQuote,
+        SourceResponse, StoredQuote, is_valid_price,
     },
     pricing::UpstreamSource,
 };
@@ -22,7 +22,7 @@ pub(crate) fn evaluate_quotes(
 ) -> QuoteEvaluation {
     let sources: Vec<_> = quotes
         .into_iter()
-        .filter(|quote| quote.price_usd.is_finite() && quote.price_usd > 0.0)
+        .filter(|quote| is_valid_price(quote.price_usd))
         .map(|quote| {
             let age_seconds = quote
                 .last_success_at_unix
@@ -119,7 +119,7 @@ pub(crate) fn evaluate_quotes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::source_contract::QuoteKind;
+    use crate::models::QuoteKind;
 
     fn quote(source: &str, price: f64, time: i64) -> StoredQuote {
         StoredQuote {

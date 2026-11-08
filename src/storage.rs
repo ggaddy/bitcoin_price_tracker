@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -7,12 +8,25 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task;
 
 use crate::{
-    models::{
-        SnapshotRecord, StoredPriceState,
-        source_contract::{LastAttempt, ProviderHealth, SourceError, StoredQuote},
-    },
+    models::{LastAttempt, ProviderHealth, SourceError, StoredQuote, is_valid_price},
     pricing::UpstreamSource,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SnapshotRecord {
+    pub(crate) fetched_at_unix: i64,
+    pub(crate) sources: Vec<StoredQuote>,
+    average_price: Option<f64>,
+    spread: Option<f64>,
+    pub(crate) warnings: Vec<String>,
+    refreshed_source: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct StoredPriceState {
+    pub(crate) snapshot: Option<SnapshotRecord>,
+    pub(crate) provider_health: Vec<ProviderHealth>,
+}
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -170,41 +184,124 @@ fn prune_snapshots_to_latest(conn: &Connection) -> Result<(), String> {
 
 #[cfg(test)]
 fn store_snapshot_sync(db_path: &Path, snapshot: SnapshotRecord) -> Result<(), String> {
-    store_refresh_sync(db_path, Some(snapshot), Vec::new())
+    // Seed exact persistence fixtures, including legacy metadata, for read and
+    // migration tests. Runtime writes always enter through store_refresh.
+    let mut conn = open_connection(db_path)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    write_snapshot(&tx, snapshot)?;
+    tx.commit().map_err(|error| error.to_string())
 }
 
 pub(crate) async fn store_refresh(
     db_path: PathBuf,
-    snapshot: Option<SnapshotRecord>,
+    refreshed: Vec<StoredQuote>,
     health: Vec<ProviderHealth>,
-) -> Result<(), String> {
-    run_blocking(move || store_refresh_sync(&db_path, snapshot, health)).await
+    fetched_at_unix: i64,
+) -> Result<bool, String> {
+    run_blocking(move || store_refresh_sync(&db_path, refreshed, health, fetched_at_unix)).await
 }
 
 fn store_refresh_sync(
     db_path: &Path,
-    snapshot: Option<SnapshotRecord>,
+    refreshed: Vec<StoredQuote>,
     health: Vec<ProviderHealth>,
-) -> Result<(), String> {
-    let mut conn = open_connection(db_path)?;
-    let tx = conn
-        .transaction()
-        .map_err(|error| format!("failed to start SQLite transaction: {error}"))?;
-
-    if let Some(snapshot) = snapshot {
-        write_snapshot(&tx, snapshot)?;
+    fetched_at_unix: i64,
+) -> Result<bool, String> {
+    if refreshed
+        .iter()
+        .any(|quote| !is_valid_price(quote.price_usd))
+    {
+        return Err("refusing to store an invalid source price".to_string());
     }
+    let has_quotes = !refreshed.is_empty();
+    let mut conn = open_connection(db_path)?;
+    // Reserve the writer before reading the retained quotes. The merge and
+    // health update must use the latest committed state in one transaction.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("failed to start SQLite transaction: {error}"))?;
+    if has_quotes {
+        let latest_snapshot = read_snapshot(&tx, || {})?;
+        let refreshed_source = match refreshed.as_slice() {
+            [price] => price.source.clone(),
+            prices if prices.len() == UpstreamSource::ALL.len() => "all".to_string(),
+            _ => "partial".to_string(),
+        };
+        let sources = merge_snapshot_sources(latest_snapshot.as_ref(), refreshed);
+        let (average_price, spread) = summarize_prices(&sources);
+        write_snapshot(
+            &tx,
+            SnapshotRecord {
+                fetched_at_unix,
+                sources,
+                average_price,
+                spread,
+                warnings: health
+                    .iter()
+                    .filter_map(|record| match &record.last_attempt {
+                        LastAttempt::Failure { error, .. } => Some(error.message.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                refreshed_source: Some(refreshed_source),
+            },
+        )?;
+    }
+
     write_provider_health(&tx, health)?;
     tx.commit()
         .map_err(|error| format!("failed to commit refresh transaction: {error}"))?;
-    Ok(())
+    Ok(has_quotes)
+}
+
+fn merge_snapshot_sources(
+    latest_snapshot: Option<&SnapshotRecord>,
+    refreshed_prices: Vec<StoredQuote>,
+) -> Vec<StoredQuote> {
+    let mut source_prices = HashMap::new();
+
+    if let Some(snapshot) = latest_snapshot {
+        for source in &snapshot.sources {
+            if is_valid_price(source.price_usd) {
+                source_prices.insert(source.source.clone(), source.clone());
+            }
+        }
+    }
+
+    for refreshed_price in refreshed_prices {
+        source_prices.insert(refreshed_price.source.clone(), refreshed_price);
+    }
+    let mut sources: Vec<_> = source_prices.into_values().collect();
+    sources.sort_by(|left, right| {
+        UpstreamSource::sort_key(&left.source).cmp(&UpstreamSource::sort_key(&right.source))
+    });
+    sources
+}
+
+fn summarize_prices(sources: &[StoredQuote]) -> (Option<f64>, Option<f64>) {
+    if sources.is_empty() {
+        return (None, None);
+    }
+
+    let total: f64 = sources.iter().map(|price| price.price_usd).sum();
+    let average = total / sources.len() as f64;
+    let min = sources
+        .iter()
+        .map(|price| price.price_usd)
+        .fold(f64::INFINITY, f64::min);
+    let max = sources
+        .iter()
+        .map(|price| price.price_usd)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    (Some(average), Some(max - min))
 }
 
 fn write_snapshot(tx: &Connection, snapshot: SnapshotRecord) -> Result<(), String> {
     if snapshot
         .sources
         .iter()
-        .any(|quote| !quote.price_usd.is_finite() || quote.price_usd <= 0.0)
+        .any(|quote| !is_valid_price(quote.price_usd))
     {
         return Err("refusing to store an invalid source price".to_string());
     }
@@ -510,10 +607,8 @@ mod tests {
 
     use rusqlite::params;
 
-    use crate::models::{
-        SnapshotRecord,
-        source_contract::{QuoteKind, StoredQuote},
-    };
+    use super::SnapshotRecord;
+    use crate::models::{QuoteKind, StoredQuote};
 
     use super::{
         init_db_sync, load_latest_snapshot_sync, load_latest_snapshot_sync_with_hook,
@@ -856,7 +951,7 @@ mod tests {
 
     #[test]
     fn quote_and_health_reads_share_one_snapshot_even_without_previous_quotes() {
-        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+        use crate::models::{LastAttempt, ProviderHealth};
 
         for seeded in [false, true] {
             let db_path = temp_db_path("quote-health-consistency");
@@ -866,13 +961,14 @@ mod tests {
             if seeded {
                 super::store_refresh_sync(
                     &db_path,
-                    Some(snapshot_for_test(10)),
+                    snapshot_for_test(10).sources,
                     vec![ProviderHealth {
                         source: "CoinGecko".into(),
                         last_attempt: LastAttempt::Success {
                             attempted_at_unix: 10,
                         },
                     }],
+                    10,
                 )
                 .unwrap();
             }
@@ -882,13 +978,14 @@ mod tests {
                 snapshot.sources[0].last_success_at_unix = Some(20);
                 super::store_refresh_sync(
                     &db_path,
-                    Some(snapshot),
+                    snapshot.sources,
                     vec![ProviderHealth {
                         source: "CoinGecko".into(),
                         last_attempt: LastAttempt::Success {
                             attempted_at_unix: 20,
                         },
                     }],
+                    20,
                 )
                 .unwrap();
                 let committed = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
@@ -990,7 +1087,7 @@ mod tests {
 
     #[test]
     fn invalid_numeric_quote_cannot_replace_stored_quotes_or_health() {
-        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+        use crate::models::{LastAttempt, ProviderHealth};
 
         let db_path = temp_db_path("invalid-price-write");
         init_db_sync(&db_path).unwrap();
@@ -1001,13 +1098,14 @@ mod tests {
             replacement.sources[0].price_usd = price;
             let error = super::store_refresh_sync(
                 &db_path,
-                Some(replacement),
+                replacement.sources,
                 vec![ProviderHealth {
                     source: "CoinGecko".into(),
                     last_attempt: LastAttempt::Success {
                         attempted_at_unix: 20,
                     },
                 }],
+                20,
             )
             .unwrap_err();
             assert!(error.contains("invalid source price"));
@@ -1082,7 +1180,7 @@ mod tests {
 
     #[test]
     fn stored_quotes_and_health_share_provider_order_with_sorted_legacy_extras() {
-        use crate::models::source_contract::{LastAttempt, ProviderHealth};
+        use crate::models::{LastAttempt, ProviderHealth};
 
         let db_path = temp_db_path("provider-order");
         init_db_sync(&db_path).unwrap();
@@ -1114,7 +1212,8 @@ mod tests {
                 },
             })
             .collect();
-        super::store_refresh_sync(&db_path, Some(snapshot), health).unwrap();
+        super::store_refresh_sync(&db_path, snapshot.sources, health, snapshot.fetched_at_unix)
+            .unwrap();
         let stored = super::load_price_state_sync_with_hook(&db_path, || {}).unwrap();
         let expected = [
             "CoinGecko",

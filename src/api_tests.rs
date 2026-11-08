@@ -549,11 +549,13 @@ async fn partial_cold_start_keeps_the_only_successful_provider() {
     );
     assert_eq!(data["average_price"], 100_300.0);
     assert_eq!(data["spread"], 0.0);
-    let stored = load_latest_snapshot(app.state.db_path.clone())
-        .await
+    let refreshed_source: String = rusqlite::Connection::open(&app.state.db_path)
         .unwrap()
+        .query_row("SELECT refreshed_source FROM price_snapshots", [], |row| {
+            row.get(0)
+        })
         .unwrap();
-    assert_eq!(stored.refreshed_source.as_deref(), Some("Gemini"));
+    assert_eq!(refreshed_source, "Gemini");
     assert_eq!(data["warnings"].as_array().unwrap().len(), 3);
     for source in ["CoinGecko", "Coinbase", "Kraken"] {
         assert!(
@@ -574,7 +576,7 @@ async fn partial_cold_start_keeps_the_only_successful_provider() {
 
 #[tokio::test]
 async fn invalid_provider_data_retains_valid_observations_and_records_failure_health() {
-    use crate::{models::source_contract::LastAttempt, storage::load_price_state};
+    use crate::{models::LastAttempt, storage::load_price_state};
 
     let app = TestApp::new().await;
     app.presence(true).await;
@@ -670,7 +672,7 @@ async fn invalid_retained_quote_is_excluded_when_healthy_providers_refresh() {
 #[tokio::test]
 async fn partial_refresh_preserves_failed_quote_observation_and_health_survives_restart() {
     use crate::{
-        models::source_contract::{LastAttempt, QuoteKind},
+        models::{LastAttempt, QuoteKind},
         storage::load_price_state,
     };
 
@@ -860,7 +862,7 @@ async fn total_provider_failure_preserves_quotes_and_persists_every_error() {
         assert_eq!(persisted.provider_health.len(), 4);
         assert!(persisted.provider_health.iter().all(|health| matches!(
             health.last_attempt,
-            crate::models::source_contract::LastAttempt::Failure { .. }
+            crate::models::LastAttempt::Failure { .. }
         )));
         for source in UpstreamSource::ALL {
             assert!(
@@ -1011,11 +1013,13 @@ async fn partial_full_refresh_merges_successes_with_retained_quotes() {
     );
     assert_eq!(data["average_price"], 105_150.0);
     assert_eq!(data["spread"], 10_100.0);
-    let stored = load_latest_snapshot(app.state.db_path.clone())
-        .await
+    let refreshed_source: String = rusqlite::Connection::open(&app.state.db_path)
         .unwrap()
+        .query_row("SELECT refreshed_source FROM price_snapshots", [], |row| {
+            row.get(0)
+        })
         .unwrap();
-    assert_eq!(stored.refreshed_source.as_deref(), Some("partial"));
+    assert_eq!(refreshed_source, "partial");
     assert_eq!(data["fetched_at_unix"], TEST_NOW + 10);
     assert_eq!(data["warnings"].as_array().unwrap().len(), 2);
     assert_eq!(app.upstreams.request_counts(), [2; 4]);
@@ -1570,4 +1574,44 @@ async fn held_provider_response_uses_time_at_completion() {
         .unwrap()
         .unwrap();
     assert_eq!(snapshot.fetched_at_unix, TEST_NOW + 7);
+}
+
+#[tokio::test]
+async fn refresh_merges_the_latest_stored_observations_at_commit_time() {
+    let app = TestApp::new().await;
+    app.presence(true).await;
+    app.refresh_and_price().await;
+    let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
+    provider.wait_for_request().await;
+    let release = provider.hold_responses();
+    app.clock.advance(Duration::from_secs(10));
+    let (_, cached) = app.price().await;
+    assert_eq!(cached["refreshing"], true);
+    provider.wait_for_request().await;
+
+    // A snapshot read before provider I/O is no longer the merge input. Simulate
+    // a newer retained observation while the dispatched provider is held.
+    let conn = rusqlite::Connection::open(&app.state.db_path).unwrap();
+    conn.execute(
+        "UPDATE source_prices SET price_usd = 150000, last_success_at_unix = ?1
+         WHERE source = 'Coinbase'",
+        [TEST_NOW + 8],
+    )
+    .unwrap();
+    release.add_permits(1);
+    app.wait_for_refresh().await;
+
+    let stored = load_latest_snapshot(app.state.db_path.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.fetched_at_unix, TEST_NOW + 10);
+    let coingecko = &stored.sources[0];
+    assert_eq!(coingecko.source, "CoinGecko");
+    assert_eq!(coingecko.last_success_at_unix, Some(TEST_NOW + 10));
+    let coinbase = &stored.sources[1];
+    assert_eq!(coinbase.source, "Coinbase");
+    assert_eq!(coinbase.price_usd, 150000.0);
+    assert_eq!(coinbase.last_success_at_unix, Some(TEST_NOW + 8));
+    assert_eq!(app.upstreams.request_counts(), [2, 1, 1, 1]);
 }

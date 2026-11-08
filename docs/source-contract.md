@@ -1,8 +1,8 @@
 # Source observations and freshness contract
 
 The price response types are defined in
-[`src/models/source_contract.rs`](../src/models/source_contract.rs); presence
-types are in [`src/models.rs`](../src/models.rs), with HTTP behavior in
+[`src/models.rs`](../src/models.rs); presence
+types are in [`src/presence.rs`](../src/presence.rs), with HTTP behavior in
 [`src/handlers.rs`](../src/handlers.rs).
 SQLite schema version 1 stores observations and provider health atomically.
 Responses evaluate per-source freshness, status, coverage, and aggregates at
@@ -102,7 +102,10 @@ Snapshot `fetched_at_unix`, saved averages/spreads, batch warnings, and refreshe
 source metadata remain persistence metadata. They must not be interpreted as
 current per-source freshness. A batch with only provider failures updates health
 without advancing the quote snapshot timestamp. Quotes and health are read
-together in one SQLite transaction.
+together in one SQLite transaction. Storage accepts new observations and health,
+merges retained quotes under the write transaction, and derives snapshot summaries,
+warnings, and refreshed-source metadata there. Refresh callers do not supply a
+previous snapshot or computed persistence fields.
 
 ## Computed response fields
 
