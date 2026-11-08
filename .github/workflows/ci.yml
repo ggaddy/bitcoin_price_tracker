@@ -83,6 +83,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build --tag btc-ci .
       - run: python3 scripts/verify_runtime.py --engine docker --image btc-ci
+      - run: python3 scripts/verify_runtime_network.py --engine docker --image btc-ci
       - run: python3 scripts/check_image_exceptions.py
       - name: Scan final runtime image
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2

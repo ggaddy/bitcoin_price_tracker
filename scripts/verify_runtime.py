@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import subprocess
+import tarfile
 import time
 import tempfile
 from pathlib import Path
@@ -55,6 +56,39 @@ try:
     # AUD-07 exceptions depend on these interfaces remaining unused. Inspect the
     # exact image binary, not a separately built host executable.
     with tempfile.TemporaryDirectory(prefix='btc-symbol-review-') as directory:
+        reviewed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
+        retired = {'zlib1g', 'libssl3t64', 'libstdc++6', 'libgomp1', 'libzstd1'}
+        elf_files = {}
+        rootfs = str(Path(directory) / 'rootfs.tar')
+        command('export', '--output', rootfs, container)
+        with tarfile.open(rootfs) as filesystem:
+            unused_files = [entry.name for entry in filesystem
+                            if Path(entry.name).name.startswith(('libz.so', 'libssl.so', 'libcrypto.so',
+                                                                *retired))
+                            or retired & set(Path(entry.name).parts)]
+            for entry in filesystem.getmembers():
+                if entry.isfile():
+                    with filesystem.extractfile(entry) as file:
+                        magic = file.read(4)
+                        if magic == b'\x7fELF':
+                            name = Path(entry.name).name
+                            assert name in reviewed | {'bitcoin_price_tracker'}, f'Unreviewed runtime ELF: {entry.name}'
+                            assert name not in elf_files, f'Duplicate runtime ELF: {entry.name}'
+                            target = Path(directory) / name
+                            target.write_bytes(magic + file.read())
+                            elf_files[name] = target
+            nsswitch = filesystem.extractfile('etc/nsswitch.conf').read().decode()
+        assert not unused_files, f'Runtime must omit retired packages: {sorted(unused_files)}'
+        assert set(elf_files) == reviewed | {'bitcoin_price_tracker'}, sorted(elf_files)
+        for name, path in elf_files.items():
+            dynamic = subprocess.run(['readelf', '--dynamic', '--wide', str(path)],
+                                     check=True, capture_output=True, text=True).stdout
+            dependencies = set(re.findall(r'\(NEEDED\).*?\[(.*?)\]', dynamic))
+            assert dependencies <= reviewed, f'Unreviewed dependency of {name}: {sorted(dependencies)}'
+        databases = dict(line.split(':', 1) for line in nsswitch.splitlines() if line and not line.startswith('#'))
+        assert databases['hosts'].split() == ['files', 'dns'], nsswitch
+        assert all(set(backends.split()) <= {'files', 'dns'} for backends in databases.values()), nsswitch
+        print('Exact image contains only the release executable and four reviewed native libraries; NSS uses built-in files/dns.')
         binary = str(Path(directory) / 'bitcoin_price_tracker')
         command('cp', container + ':/usr/local/bin/bitcoin_price_tracker', binary)
         symbols = subprocess.run(['readelf', '--dyn-syms', '--wide', binary],
@@ -69,13 +103,13 @@ try:
         blocked |= {prefix + function for prefix in ('', '__') for function in
                     ('gettext', 'dgettext', 'dcgettext', 'ngettext', 'dngettext',
                      'dcngettext', 'textdomain', 'bindtextdomain', 'bind_textdomain_codeset')}
+        blocked |= {'iconv', 'iconv_open', 'iconv_close', 'setlocale', 'uselocale'}
         assert not imports & blocked, f'Review AUD-07 exposure: {sorted(imports & blocked)}'
         cpp_imports = {symbol for symbol in imports if symbol.startswith('_Z')}
         assert not cpp_imports, f'Review AUD-07 C++ exposure: {sorted(cpp_imports)}'
         dynamic = subprocess.run(['readelf', '--dynamic', '--wide', binary],
                                  check=True, capture_output=True, text=True).stdout
         needed = set(re.findall(r'\(NEEDED\).*?\[(.*?)\]', dynamic))
-        reviewed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
         assert needed and needed <= reviewed, f'Review AUD-07 library exposure: {sorted(needed)}'
         print('AUD-07 release imports and linked-library exposure checks passed.')
     command('start', container)
