@@ -7,7 +7,7 @@ use std::{
 use reqwest::{StatusCode, header::HeaderValue};
 
 use crate::{
-    models::source_contract::{ErrorCategory, SourceError},
+    models::{ErrorCategory, SourceError},
     pricing::UpstreamSource,
 };
 

@@ -13,11 +13,11 @@ use crate::{
     config::{REFRESH_INTERVAL_SECONDS, SOURCE_MAX_AGE_SECONDS},
     errors::{ProviderError, ProviderErrorKind, RetryAfter},
     freshness::evaluate_quotes,
-    models::{PriceResponse, SnapshotRecord, StoredPriceState, source_contract::PriceStatus},
+    models::{PriceResponse, PriceStatus},
     presence::active_viewer_count,
     pricing::{UpstreamSource, refresh_snapshot},
     state::AppState,
-    storage::load_price_state,
+    storage::{SnapshotRecord, StoredPriceState, load_price_state},
 };
 
 #[derive(Default)]
@@ -54,9 +54,9 @@ impl PriceRefresh {
 }
 
 pub(crate) async fn cached_prices(state: &AppState) -> (StatusCode, PriceResponse) {
-    // Reserve refresh ownership before inspecting SQLite. Holding this guard
-    // ensures the snapshot handed to a refresh cannot race another writer.
-    // Readers never wait for ownership, nor for any provider network request.
+    // Reserve refresh ownership before inspecting SQLite so concurrent readers
+    // cannot dispatch overlapping attempts. Readers never wait for ownership
+    // or for provider network requests; storage owns merging each result.
     let owner = state.refresh.coordinator.clone().try_lock_owned().ok();
     let stored_snapshot = load_price_state(state.db_path.clone()).await;
     let active_viewers = active_viewer_count(state).await;
@@ -99,14 +99,13 @@ pub(crate) async fn cached_prices(state: &AppState) -> (StatusCode, PriceRespons
                 refreshing = true;
                 refresh_skipped_reason = Some("Refresh scheduled in the background.".into());
                 let state = state.clone();
-                let snapshot = stored.snapshot.clone();
                 tokio::spawn(async move {
                     // A client leaving/cancelling never cancels dispatched work.
                     // Recheck admission immediately before provider I/O begins.
                     if state.refresh.is_stopping() || active_viewer_count(&state).await == 0 {
                         return;
                     }
-                    let outcome = refresh_snapshot(&state, snapshot, &plan.sources).await;
+                    let outcome = refresh_snapshot(&state, &plan.sources).await;
                     coordinator.complete(
                         &plan,
                         &outcome.failures,
