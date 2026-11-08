@@ -13,12 +13,8 @@ impl Clock for SystemClock {
     }
 
     fn now_unix(&self) -> i64 {
-        now_unix()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs() as i64)
     }
-}
-
-pub(crate) fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
 }
