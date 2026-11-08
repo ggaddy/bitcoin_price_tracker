@@ -400,7 +400,7 @@ mod tests {
     use serde_json::json;
     use std::{error::Error, time::Duration};
     use tokio::{
-        io::AsyncWriteExt,
+        io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
         time,
     };
@@ -561,6 +561,13 @@ mod tests {
         let endpoint = format!("http://{}/private-fixture", listener.local_addr().unwrap());
         let (response, socket) = tokio::join!(client.get(endpoint).send(), async {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Wait for the request before responding so the fixture does not race
+            // the client's HTTP handshake or close with unread request bytes.
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                assert!(headers.len() < 4096, "fixture request headers too large");
+                headers.push(socket.read_u8().await.unwrap());
+            }
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{")
                 .await
