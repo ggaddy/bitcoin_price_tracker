@@ -6,7 +6,7 @@ use hyper_util::{
 };
 use std::{
     future::Future,
-    sync::{Arc, OnceLock, atomic::Ordering},
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::{
@@ -36,18 +36,21 @@ pub(crate) async fn serve_tracker_until(
     listener: TcpListener,
     state: crate::state::AppState,
     shutdown: impl Future<Output = ()>,
-    grace: Duration,
-    limits: ConnectionLimits,
 ) -> Result<(), String> {
+    let grace = Duration::from_secs(state.config.shutdown_seconds);
+    let limits = ConnectionLimits {
+        max_connections: state.config.max_connections,
+        ..Default::default()
+    };
     let deadline = OnceLock::new();
     let stop = async {
         shutdown.await;
-        state.stopping.store(true, Ordering::SeqCst);
+        state.refresh.stop();
         let _ = deadline.set(tokio::time::Instant::now() + grace);
     };
     serve_until(
         listener,
-        crate::app::router(state.clone()),
+        crate::handlers::router(state.clone()),
         stop,
         grace,
         limits,
@@ -56,10 +59,7 @@ pub(crate) async fn serve_tracker_until(
     // Background price work owns the refresh guard through its database commit.
     // Drain it within the same shutdown budget, not an additional grace period.
     if let Some(deadline) = deadline.get() {
-        let guard = tokio::time::timeout_at(*deadline, state.refresh.lock())
-            .await
-            .map_err(|_| "background price refresh shutdown deadline exceeded".to_string())?;
-        drop(guard);
+        state.refresh.drain_until(*deadline).await?;
     }
     Ok(())
 }

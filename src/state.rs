@@ -1,19 +1,12 @@
 use reqwest::Client;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64},
-    },
-    time::Instant,
-};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 
 use crate::{
     config::{RuntimeConfig, UpstreamEndpoints},
     limits::RequestLimits,
-    refresh::RefreshCoordinator,
+    presence::Presence,
+    refresh::PriceRefresh,
     util::{Clock, SystemClock},
 };
 
@@ -26,20 +19,8 @@ pub(crate) struct AppState {
     pub(crate) db_path: PathBuf,
     pub(crate) endpoints: Arc<UpstreamEndpoints>,
     pub(crate) clock: Arc<dyn Clock>,
-    // If both locks are needed, acquire refresh before viewers. Presence only
-    // acquires viewers, and that guard must never span network or database I/O.
-    pub(crate) viewers: Arc<Mutex<HashMap<String, Instant>>>,
-    pub(crate) refresh: Arc<Mutex<RefreshCoordinator>>,
-    pub(crate) price_refresh_report: Arc<Mutex<PriceRefreshReport>>,
-    pub(crate) stopping: Arc<AtomicBool>,
-    pub(crate) full_refresh_generation: Arc<AtomicU64>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct PriceRefreshReport {
-    pub(crate) succeeded: bool,
-    // Client-safe failures not already saved in the snapshot (e.g. write failure).
-    pub(crate) errors: Vec<String>,
+    pub(crate) presence: Arc<Presence>,
+    pub(crate) refresh: Arc<PriceRefresh>,
 }
 
 impl AppState {
@@ -73,11 +54,8 @@ impl AppState {
             db_path,
             endpoints: Arc::new(endpoints),
             clock,
-            viewers: Arc::new(Mutex::new(HashMap::new())),
-            refresh: Arc::new(Mutex::new(RefreshCoordinator::default())),
-            price_refresh_report: Arc::new(Mutex::new(PriceRefreshReport::default())),
-            stopping: Arc::new(AtomicBool::new(false)),
-            full_refresh_generation: Arc::new(AtomicU64::new(0)),
+            presence: Arc::new(Presence::default()),
+            refresh: Arc::new(PriceRefresh::default()),
         }
     }
 }

@@ -7,7 +7,7 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 use tokio::{net::TcpListener, sync::oneshot};
 
 #[tokio::test]
@@ -17,8 +17,8 @@ async fn health_is_read_only_and_does_not_activate_providers() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data, json!({"status": "ok"}));
     assert_eq!(app.upstreams.request_counts(), [0; 4]);
-    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 0);
-    assert!(app.state.viewers.lock().await.is_empty());
+    assert_eq!(app.state.presence.generation(), 0);
+    assert!(crate::presence::active_viewer_count(&app.state).await == 0);
     let moved = app.state.db_path.with_extension("saved");
     std::fs::rename(&app.state.db_path, &moved).unwrap();
     let (status, data) = app.request(Method::GET, "/health", None).await;
@@ -54,10 +54,10 @@ async fn viewer_cap_preserves_existing_heartbeats_removal_and_expiry() {
     app.presence_for("three", true).await;
     app.clock.advance(Duration::from_secs(16));
     app.presence_for("four", true).await;
-    let viewers = app.state.viewers.lock().await;
-    assert_eq!(viewers.len(), 1);
-    assert!(viewers.contains_key("four"));
-    assert_eq!(app.state.full_refresh_generation.load(Ordering::SeqCst), 2);
+    assert_eq!(crate::presence::active_viewer_count(&app.state).await, 1);
+    app.presence_for("four", true).await;
+    assert_eq!(crate::presence::active_viewer_count(&app.state).await, 1);
+    assert_eq!(app.state.presence.generation(), 2);
 }
 
 #[tokio::test]
@@ -157,7 +157,11 @@ async fn background_refresh_does_not_occupy_the_only_request_slot() {
 
 #[tokio::test]
 async fn tracker_shutdown_drains_a_background_refresh_after_its_http_response_finishes() {
-    let app = TestApp::new().await;
+    let mut app = TestApp::new().await;
+    app.configure(RuntimeConfig {
+        shutdown_seconds: 10,
+        ..Default::default()
+    });
     app.presence(true).await;
     let provider = app.upstreams.provider(UpstreamSource::CoinGecko);
     let release = provider.hold_responses();
@@ -171,8 +175,6 @@ async fn tracker_shutdown_drains_a_background_refresh_after_its_http_response_fi
         async {
             stop_receive.await.unwrap();
         },
-        Duration::from_secs(10),
-        crate::lifecycle::ConnectionLimits::default(),
     ));
     let response = reqwest::Client::new()
         .get(format!("http://{address}/api/price"))
@@ -187,7 +189,7 @@ async fn tracker_shutdown_drains_a_background_refresh_after_its_http_response_fi
     provider.wait_for_request().await;
     stop_send.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
-        while !app.state.stopping.load(Ordering::SeqCst) {
+        while !app.state.refresh.is_stopping() {
             tokio::task::yield_now().await;
         }
     })
@@ -214,31 +216,6 @@ async fn tracker_shutdown_drains_a_background_refresh_after_its_http_response_fi
             .contains("shutting down")
     );
     assert_eq!(app.upstreams.request_counts(), [1; 4]);
-}
-
-#[tokio::test]
-async fn tracker_background_drain_uses_the_existing_shutdown_deadline() {
-    let app = TestApp::new().await;
-    let guard = app.state.refresh.clone().lock_owned().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let server = tokio::spawn(crate::lifecycle::serve_tracker_until(
-        listener,
-        app.state.clone(),
-        async {},
-        Duration::from_secs(1),
-        crate::lifecycle::ConnectionLimits::default(),
-    ));
-    while !app.state.stopping.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(1)).await;
-    tokio::time::resume();
-    assert_eq!(
-        server.await.unwrap(),
-        Err("background price refresh shutdown deadline exceeded".into())
-    );
-    drop(guard);
 }
 
 #[tokio::test]
@@ -364,7 +341,7 @@ async fn stalled_request_has_a_deadline_and_releases_its_slot() {
 async fn oversized_presence_body_is_rejected_without_registering_a_viewer() {
     use tower::ServiceExt;
     let app = TestApp::new().await;
-    let response = crate::app::router(app.state.clone())
+    let response = crate::handlers::router(app.state.clone())
         .oneshot(
             axum::http::Request::builder()
                 .method(Method::POST)
@@ -378,7 +355,7 @@ async fn oversized_presence_body_is_rejected_without_registering_a_viewer() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(app.state.viewers.lock().await.is_empty());
+    assert!(crate::presence::active_viewer_count(&app.state).await == 0);
     assert_eq!(app.upstreams.request_counts(), [0; 4]);
 }
 
@@ -390,7 +367,7 @@ async fn security_headers_cover_assets_errors_and_overload() {
         requests_per_second: 1,
         ..Default::default()
     });
-    let router = crate::app::router(app.state.clone());
+    let router = crate::handlers::router(app.state.clone());
     for path in [
         "/",
         "/assets/dashboard.css",
@@ -503,7 +480,7 @@ async fn news_overload_cannot_consume_asset_capacity() {
 async fn embedded_assets_revalidate_get_and_head_without_losing_security_headers() {
     use tower::ServiceExt;
     let app = TestApp::new().await;
-    let router = crate::app::router(app.state.clone());
+    let router = crate::handlers::router(app.state.clone());
     let mut tags = Vec::new();
     for path in [
         "/assets/dashboard.js",

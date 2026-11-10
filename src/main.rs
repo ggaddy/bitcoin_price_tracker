@@ -1,4 +1,3 @@
-mod app;
 mod config;
 mod errors;
 mod freshness;
@@ -53,13 +52,8 @@ fn main() -> ExitCode {
         let listener = tokio::net::TcpListener::bind(config.bind_address).await
             .map_err(|error| format!("failed to bind {}: {error}", config.bind_address))?;
         tracing::info!(address = %config.bind_address, max_viewers = config.max_viewers, "server listening");
-        let grace = Duration::from_secs(config.shutdown_seconds);
-        let connection_limits = lifecycle::ConnectionLimits {
-            max_connections: config.max_connections,
-            ..Default::default()
-        };
         let state = AppState::new(client, db_path).with_config(config);
-        lifecycle::serve_tracker_until(listener, state, lifecycle::shutdown_signal(), grace, connection_limits).await
+        lifecycle::serve_tracker_until(listener, state, lifecycle::shutdown_signal()).await
     });
     // Bound cleanup of any blocking SQLite jobs after the HTTP drain deadline.
     runtime.shutdown_timeout(Duration::from_secs(5));
