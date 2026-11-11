@@ -47,7 +47,7 @@ def prune(root, executable, report):
     locale_imports = {'iconv', 'iconv_open', 'iconv_close', 'setlocale', 'uselocale'}
     assert not imports & locale_imports, f'Review charset/locale modules: {imports & locale_imports}'
 
-    retired = {'libssl3t64': '3.5.7-1~deb13u3', 'zlib1g': '1:1.3.dfsg+really1.3.1-1+b1',
+    retired = {'libssl3t64': '3.5.7-1~deb13u3', 'zlib1g': '1:1.3.dfsg+really1.3.1-1+deb13u1',
                'libstdc++6': '14.2.0-19', 'libgomp1': '14.2.0-19', 'libzstd1': '1.5.7+dfsg-1'}
     for package, version in retired.items():
         metadata = status / package

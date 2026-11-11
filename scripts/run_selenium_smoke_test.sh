@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SELENIUM_CONTAINER_NAME="${SELENIUM_CONTAINER_NAME:-btc-selenium-$$-$RANDOM}"
-SELENIUM_IMAGE="${SELENIUM_IMAGE:-docker.io/selenium/standalone-chrome:4.48.0-20260905}"
-RUST_TEST_IMAGE="${RUST_TEST_IMAGE:-docker.io/library/rust:1.85.1-bookworm}"
+SELENIUM_IMAGE="${SELENIUM_IMAGE:-docker.io/selenium/standalone-chrome:4.52.0-20261101@sha256:3fa985d1a73d1a3ae43c758d546b505b9d73e31ecaffd7a77725f19d1a70edec}"
+RUST_TEST_IMAGE="${RUST_TEST_IMAGE:-docker.io/library/rust:1.99.1-bookworm}"
 SELENIUM_WAIT_SECONDS="${SELENIUM_WAIT_SECONDS:-60}"
 ENGINE="${CONTAINER_ENGINE:-}"
 if [[ -z "$ENGINE" ]]; then

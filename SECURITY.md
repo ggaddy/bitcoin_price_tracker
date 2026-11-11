@@ -10,9 +10,9 @@ in Beads; setup and operations are in [README.md](README.md).
 
 CI runs `cargo audit --deny warnings` and `npm audit --audit-level=low` on pull
 requests, pushes to master, and weekly. These jobs fail visibly; neither uses
-`continue-on-error`. RustSec uses cargo-audit 0.22.2 with Rust 1.94.0, separately
-from the application's pinned Rust 1.85.1 toolchain, to read current advisory
-formats. Browser test packages are included in the npm scan.
+`continue-on-error`. RustSec uses cargo-audit 0.23.0 with the application's
+pinned Rust 1.99.1 toolchain to read current advisory formats. Browser test
+packages are included in the npm scan.
 
 There are currently no accepted Rust or npm advisories. Before adding any advisory ID to
 `.cargo/audit.toml`, record its affected dependency/path, why upgrading or removing
@@ -31,7 +31,7 @@ network access; an image alone does not provide workload isolation.
 
 Release tags run the reusable CI workflow for that exact commit. Publication
 requires the commit to be current `master`, then builds a local candidate, runs
-the runtime checks, and scans that same image with Grype 0.118.0 before logging
+the runtime checks, and scans that same image with Grype 0.121.3 before logging
 in and pushing it without a rebuild. PR/master CI also scans its final image;
 weekly CI additionally resolves and scans the published `latest` digest.
 Unreviewed High/Critical findings fail these jobs, including findings without
@@ -459,6 +459,55 @@ v2.9.7 digest `sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10
 it remains affected and fails the reduced strict policy until an authorized
 release replaces it. `bitcoin_price_tracker-31u` tracks that release and
 `bitcoin_price_tracker-fmq` remains open. No image was published or deployed.
+
+### November 10, 2026 dependency and native-library refresh
+
+Reviewed on **2026-11-10 America/Chicago** for `bitcoin_price_tracker-qf0`.
+[Exact candidate evidence](docs/security/dependency-upgrades-2026-11-10.json)
+records the build inputs, image and ELF hashes, imports, package findings,
+scanner database, and validation commands. This review covers the local
+Linux/amd64 upgrade candidate; it does not renew exception deadlines or establish
+published-image or deployment state.
+
+The refresh uses Rust **1.99.1**, Reqwest **0.13.5**, Rusqlite **0.41.1**, and
+Thirtyfour **0.38.1**, with 100 locked Cargo package entries updated. Bundled
+`libsqlite3-sys` **0.39.1** supplies SQLite **3.54.1**, fixing
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html).
+Strict RustSec and npm audits pass with no exceptions. Playwright **1.65.0**,
+Node **26.13.0** LTS, Selenium **4.52.0-20261101**, Kache **2.0.0**, and the
+Python **3.15.0** verification helper are also validated. Axum still requires
+exactly Matchit 0.8.4; Cargo cannot select 0.8.6 under that upstream constraint.
+Cybercore CSS 0.3.0 remains the current stable release.
+
+The supported distroless base is updated to index
+`sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab`.
+It contains the [DSA-6613-1](https://security-tracker.debian.org/tracker/DSA-6613-1)
+zlib fix; the exact-version pruning guard now recognizes that reviewed package.
+The final image still removes zlib, OpenSSL, C++/OpenMP, compression and unused
+libc modules. Reqwest now uses Rustls with statically linked AWS-LC and platform
+certificate verification. The final executable and DNS/TLS helper still load only
+libc, libm, libgcc_s and the loader. Both exact-image verifiers pass, including
+private-CA acceptance, hostname/untrusted-CA rejection, native imports, locale,
+NSS, persistence, non-root isolation and shutdown.
+
+AWS-LC adds fixed-format integer `sscanf` calls for process CPU-capability
+settings; HTTP cannot set those environment values or format strings. Its weak
+`OPENSSL_memory_*` allocator hooks do not introduce a dynamic OpenSSL dependency.
+No gettext, monetary-formatting, DNS-printing, charset/locale or C++ imports
+appear. SQLite extension loading stays disabled; `dlopen`/`dlsym` remain, so the
+checks do not prove all indirect native paths safe. Current Debian records still
+offer no trixie fix for the retained libc/GCC findings. Their previously reviewed
+exposure conditions remain unchanged in the new executable.
+
+Grype **0.121.3**, with its valid November 10 database, reports **34 matches**:
+seven existing suppressed High matches, 13 Medium, five Low and nine Negligible.
+The strict `--fail-on high` scan passes using the unchanged seven matchers. A
+control scan removing only the gettext exception fails on that High finding.
+No exception is added or broadened. The separate deadline checker still fails
+with `Image advisory review expired on 2026-11-10`; the renewal in
+[PR #46](https://github.com/ggaddy/bitcoin_price_tracker/pull/46), tracked by
+`bitcoin_price_tracker-51c`, must be integrated before CI/release can pass that
+gate. No image was published or deployed.
 
 ## Application containment
 

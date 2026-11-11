@@ -29,7 +29,7 @@ user, repository, and orchestrator instructions.
 
 ## Build and validation
 
-Run from the repository root. Rust 1.85.1, rustfmt, and Clippy are pinned by
+Run from the repository root. Rust 1.99.1, rustfmt, and Clippy are pinned by
 [rust-toolchain.toml](rust-toolchain.toml); use locked dependencies:
 
 ```bash
