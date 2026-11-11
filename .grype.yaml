@@ -1,5 +1,6 @@
 # AUD-07: package/version-scoped exposure review in SECURITY.md.
-# Review by: 2026-11-10
+# Full review: 2026-11-10 America/Chicago; SECURITY.md / bitcoin_price_tracker-12z.
+# Review by: 2026-12-07
 # Keep reviewed findings visible in CI logs. No blanket severity/fix-state ignores.
 show-suppressed: true
 ignore:
