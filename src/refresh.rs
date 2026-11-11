@@ -215,12 +215,12 @@ fn refresh_skip_reason(active_viewers: usize, snapshot_age: Option<i64>) -> Opti
         );
     }
 
-    if let Some(age) = snapshot_age {
-        if age < REFRESH_INTERVAL_SECONDS {
-            return Some(format!(
-                "Refresh skipped: latest snapshot is {age}s old; minimum refresh interval is {REFRESH_INTERVAL_SECONDS}s."
-            ));
-        }
+    if let Some(age) = snapshot_age
+        && age < REFRESH_INTERVAL_SECONDS
+    {
+        return Some(format!(
+            "Refresh skipped: latest snapshot is {age}s old; minimum refresh interval is {REFRESH_INTERVAL_SECONDS}s."
+        ));
     }
 
     None

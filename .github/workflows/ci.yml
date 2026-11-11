@@ -21,15 +21,15 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: docker.io/library/rust:1.85.1-bookworm
+    container: docker.io/library/rust:1.99.1-bookworm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain
       - name: Set up Kache
         uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
         with:
-          version: '1.0.0'
-          cache-key-prefix: kache-rust-1.85.1
+          version: '2.0.0'
+          cache-key-prefix: kache-rust-1.99.1
           cache-executables: true
           max-size: 2GiB
           pr-comment: false
@@ -43,28 +43,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.19.0'
+          node-version: '26.13.0'
       - run: npm ci --prefix tests/browser
       - run: npm exec --prefix tests/browser -- playwright install --with-deps chromium
       - run: npm test --prefix tests/browser
   advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: docker.io/library/rust:1.94.0-bookworm
+    container: docker.io/library/rust:1.99.1-bookworm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustc +1.94.0 --version
+      - run: rustc +1.99.1 --version
       - name: Set up Kache
         uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
         with:
-          version: '1.0.0'
-          cache-key-prefix: kache-audit-1.94.0
+          version: '2.0.0'
+          cache-key-prefix: kache-audit-1.99.1
           cache-executables: true
           max-size: 2GiB
           pr-comment: false
       - name: Install pinned RustSec scanner
-        run: cargo +1.94.0 install cargo-audit --locked --version 0.22.2
-      - run: cargo +1.94.0 audit --deny warnings
+        run: cargo +1.99.1 install cargo-audit --locked --version 0.23.0
+      - run: cargo +1.99.1 audit --deny warnings
   npm-advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.19.0'
+          node-version: '26.13.0'
       - run: npm ci --prefix tests/browser
       - run: npm audit --prefix tests/browser --audit-level=low
   runtime:
@@ -89,7 +89,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: btc-ci
-          grype-version: v0.118.0
+          grype-version: v0.121.3
           config: .grype.yaml
           severity-cutoff: high
           output-format: table
@@ -110,7 +110,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ steps.published.outputs.image }}
-          grype-version: v0.118.0
+          grype-version: v0.121.3
           config: .grype.yaml
           severity-cutoff: high
           output-format: table

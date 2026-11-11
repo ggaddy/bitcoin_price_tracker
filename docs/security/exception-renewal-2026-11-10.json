@@ -1,0 +1,1481 @@
+{
+  "schema_version": 1,
+  "review_date": "2026-11-10",
+  "review_timezone": "America/Chicago",
+  "evidence_generated_at_utc": "2026-11-11T05:48:21.054974+00:00",
+  "issue": "bitcoin_price_tracker-51c",
+  "owner": "ggaddy",
+  "source_revision": "aa059f50195bba9af02e2f26636fb200ba229e6e",
+  "scope": "Local review renewal for the upgraded exact candidate, current published v2.9.9 digest, and latest supported distroless base. No commit/push, merge, image publication or deployment.",
+  "deadline": {
+    "previous": "2026-11-10",
+    "review_before": "2026-12-07",
+    "days_after_this_refresh": 27,
+    "rationale": "Preserve the earlier proposed December 7 deadline after completing fresh vendor, candidate/published/base scans, exact native exposure review, and independent negative controls. No supported fixes exist for the seven retained matches; exposure guards still pass. Reassess sooner on supported fixes, new advisories, or native/runtime/locale/NSS changes.",
+    "next_review_issue": "bitcoin_price_tracker-12z",
+    "remote_effect": "Local working-tree fix only until explicitly authorized integration."
+  },
+  "policy": {
+    "original_sha256": "11db2e4f9e0ced10cc4ff8c72d352aef08daf317deecba60e2842830d9f2f9a0",
+    "renewed_sha256": "395c6ade8160558bd1dd3628d6d1a2ee4059cf3743993135729bd3de62aed5dc",
+    "matcher_bodies_unchanged": true,
+    "suppressed_visibility_unchanged": true,
+    "fail_on": "high",
+    "fix_state_filter": null
+  },
+  "images": {
+    "candidate": {
+      "reference": "localhost/btc-package-upgrades:20261110",
+      "elf_files": {
+        "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+          "sha256": "c8438e4fde1934e61c88311633f00949ff645d5c04cdb8671fa3d78164d2f307",
+          "needed": [],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libc.so.6": {
+          "sha256": "9792e3cbb541c8f44c7acf5f14f4022ea62998ecc787d326bed4d8b6547dfd92",
+          "needed": [
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [
+            "__dcgettext",
+            "__dgettext",
+            "__strfmon_l",
+            "dcgettext",
+            "dcngettext",
+            "dgettext",
+            "dngettext",
+            "gettext",
+            "ngettext",
+            "strfmon",
+            "strfmon_l"
+          ],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libgcc_s.so.1": {
+          "sha256": "30c61ab012a4241bed033725a09b61f5fdd3bb7df95ee852d0b096520524c7af",
+          "needed": [
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libm.so.6": {
+          "sha256": "6d567d53e895273ca14a1f9dc164fc6c8d39aed2f60aa46a733c2784228915f3",
+          "needed": [
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/local/bin/bitcoin_price_tracker": {
+          "sha256": "eee9c14135ce17a1cb2eb234011038fb9f32cc5b56c3d440b9321d4c9457d924",
+          "needed": [
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        }
+      },
+      "packages": {
+        "base-files": "13.8+deb13u7",
+        "ca-certificates": "20250419+deb13u1",
+        "gcc-14-base": "14.2.0-19",
+        "libc6": "2.41-12+deb13u4",
+        "libgcc-s1": "14.2.0-19",
+        "media-types": "13.0.0",
+        "netbase": "6.5",
+        "tzdata": "2026f-0+deb13u1",
+        "tzdata-legacy": "2026f-0+deb13u1"
+      },
+      "nsswitch": "# Only libc built-in NSS backends are supported in this image.\npasswd: files\ngroup: files\nshadow: files\ngshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\nnetgroup: files\n",
+      "app_dynamic_imports": [
+        "OPENSSL_memory_alloc",
+        "OPENSSL_memory_free",
+        "OPENSSL_memory_get_size",
+        "OPENSSL_memory_realloc",
+        "_ITM_deregisterTMCloneTable",
+        "_ITM_registerTMCloneTable",
+        "_Unwind_Backtrace",
+        "_Unwind_DeleteException",
+        "_Unwind_GetDataRelBase",
+        "_Unwind_GetIP",
+        "_Unwind_GetIPInfo",
+        "_Unwind_GetLanguageSpecificData",
+        "_Unwind_GetRegionStart",
+        "_Unwind_GetTextRelBase",
+        "_Unwind_RaiseException",
+        "_Unwind_Resume",
+        "_Unwind_SetGR",
+        "_Unwind_SetIP",
+        "__assert_fail",
+        "__cxa_finalize",
+        "__cxa_thread_atexit_impl",
+        "__errno_location",
+        "__gmon_start__",
+        "__isoc99_sscanf",
+        "__libc_current_sigrtmax",
+        "__libc_start_main",
+        "__res_init",
+        "__tls_get_addr",
+        "__xpg_strerror_r",
+        "abort",
+        "accept4",
+        "access",
+        "bcmp",
+        "bind",
+        "calloc",
+        "clock_gettime",
+        "close",
+        "closedir",
+        "connect",
+        "dirfd",
+        "dl_iterate_phdr",
+        "dlclose",
+        "dlerror",
+        "dlopen",
+        "dlsym",
+        "dup",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_wait",
+        "eventfd",
+        "fchmod",
+        "fchown",
+        "fcntl",
+        "fcntl64",
+        "fprintf",
+        "free",
+        "freeaddrinfo",
+        "fstat64",
+        "fsync",
+        "ftruncate64",
+        "fwrite",
+        "gai_strerror",
+        "getaddrinfo",
+        "getauxval",
+        "getcwd",
+        "getenv",
+        "geteuid",
+        "getpeername",
+        "getpid",
+        "getrandom",
+        "getsockname",
+        "getsockopt",
+        "gettid",
+        "gettimeofday",
+        "gnu_get_libc_version",
+        "ioctl",
+        "listen",
+        "localtime_r",
+        "log",
+        "lseek64",
+        "lstat64",
+        "madvise",
+        "malloc",
+        "memchr",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "mkdir",
+        "mmap",
+        "mmap64",
+        "mprotect",
+        "mremap",
+        "munmap",
+        "nanosleep",
+        "open",
+        "open64",
+        "opendir",
+        "pause",
+        "perror",
+        "poll",
+        "posix_memalign",
+        "pow",
+        "pread64",
+        "pthread_attr_destroy",
+        "pthread_attr_getguardsize",
+        "pthread_attr_getstack",
+        "pthread_attr_init",
+        "pthread_attr_setstacksize",
+        "pthread_create",
+        "pthread_detach",
+        "pthread_getattr_np",
+        "pthread_getspecific",
+        "pthread_join",
+        "pthread_key_create",
+        "pthread_key_delete",
+        "pthread_mutex_destroy",
+        "pthread_mutex_init",
+        "pthread_mutex_lock",
+        "pthread_mutex_trylock",
+        "pthread_mutex_unlock",
+        "pthread_mutexattr_destroy",
+        "pthread_mutexattr_init",
+        "pthread_mutexattr_settype",
+        "pthread_once",
+        "pthread_rwlock_destroy",
+        "pthread_rwlock_init",
+        "pthread_rwlock_rdlock",
+        "pthread_rwlock_unlock",
+        "pthread_rwlock_wrlock",
+        "pthread_self",
+        "pthread_setname_np",
+        "pthread_setspecific",
+        "pwrite64",
+        "qsort",
+        "read",
+        "readdir64",
+        "readlink",
+        "readv",
+        "realloc",
+        "realpath",
+        "recv",
+        "rmdir",
+        "sched_getaffinity",
+        "sched_yield",
+        "sdallocx",
+        "send",
+        "setsockopt",
+        "shutdown",
+        "sigaction",
+        "sigaltstack",
+        "signal",
+        "socket",
+        "socketpair",
+        "stat",
+        "stat64",
+        "statx",
+        "stderr",
+        "strchr",
+        "strcmp",
+        "strcspn",
+        "strlen",
+        "strncmp",
+        "strrchr",
+        "strspn",
+        "strtol",
+        "syscall",
+        "sysconf",
+        "time",
+        "unlink",
+        "utimes",
+        "vsnprintf",
+        "write",
+        "writev"
+      ],
+      "configuration_image_id": "486e20ec619a7b86117d95599b95d4b6ea6ccf843bd0ae3255c7bb8727fd1018",
+      "podman_manifest_digest": "sha256:2f28c2a069fe316a26410b3c2e4a173026dbae784c76b2e557fc0d2ce9b74919",
+      "registry_identity": {
+        "tag": "localhost/btc-package-upgrades:20261110",
+        "configuration_image_id": "486e20ec619a7b86117d95599b95d4b6ea6ccf843bd0ae3255c7bb8727fd1018",
+        "podman_manifest_digest": "sha256:2f28c2a069fe316a26410b3c2e4a173026dbae784c76b2e557fc0d2ce9b74919",
+        "docker_archive_scan_manifest_digest": "sha256:f58c4d4454310de04b8e6231ca362bbd2c7219e31205af700a3c9f09b96a72af",
+        "size_bytes": 19327816,
+        "elf_sha256": {
+          "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": "c8438e4fde1934e61c88311633f00949ff645d5c04cdb8671fa3d78164d2f307",
+          "usr/lib/x86_64-linux-gnu/libc.so.6": "9792e3cbb541c8f44c7acf5f14f4022ea62998ecc787d326bed4d8b6547dfd92",
+          "usr/lib/x86_64-linux-gnu/libgcc_s.so.1": "30c61ab012a4241bed033725a09b61f5fdd3bb7df95ee852d0b096520524c7af",
+          "usr/lib/x86_64-linux-gnu/libm.so.6": "6d567d53e895273ca14a1f9dc164fc6c8d39aed2f60aa46a733c2784228915f3",
+          "usr/local/bin/bitcoin_price_tracker": "eee9c14135ce17a1cb2eb234011038fb9f32cc5b56c3d440b9321d4c9457d924"
+        }
+      },
+      "environment": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "RUST_LOG=info",
+        "DATABASE_PATH=/app/data/bitcoin_prices.db",
+        "BIND_ADDRESS=0.0.0.0:3000",
+        "LANG=C",
+        "LC_ALL=C"
+      ],
+      "size_bytes": 19327816
+    },
+    "published": {
+      "reference": "docker.io/agaddy/bitcoin_price_tracker@sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f",
+      "elf_files": {
+        "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+          "sha256": "c8438e4fde1934e61c88311633f00949ff645d5c04cdb8671fa3d78164d2f307",
+          "needed": [],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libc.so.6": {
+          "sha256": "9792e3cbb541c8f44c7acf5f14f4022ea62998ecc787d326bed4d8b6547dfd92",
+          "needed": [
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [
+            "__dcgettext",
+            "__dgettext",
+            "__strfmon_l",
+            "dcgettext",
+            "dcngettext",
+            "dgettext",
+            "dngettext",
+            "gettext",
+            "ngettext",
+            "strfmon",
+            "strfmon_l"
+          ],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libgcc_s.so.1": {
+          "sha256": "30c61ab012a4241bed033725a09b61f5fdd3bb7df95ee852d0b096520524c7af",
+          "needed": [
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/lib/x86_64-linux-gnu/libm.so.6": {
+          "sha256": "6d567d53e895273ca14a1f9dc164fc6c8d39aed2f60aa46a733c2784228915f3",
+          "needed": [
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        },
+        "usr/local/bin/bitcoin_price_tracker": {
+          "sha256": "8168f8f04326c197f149fda7a8366878cc816f46f8371d51b0e3cfef044280c6",
+          "needed": [
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libc.so.6",
+            "ld-linux-x86-64.so.2"
+          ],
+          "affected_exports": [],
+          "cpp_symbols": []
+        }
+      },
+      "packages": {
+        "base-files": "13.8+deb13u7",
+        "ca-certificates": "20250419",
+        "gcc-14-base": "14.2.0-19",
+        "libc6": "2.41-12+deb13u4",
+        "libgcc-s1": "14.2.0-19",
+        "media-types": "13.0.0",
+        "netbase": "6.5",
+        "tzdata": "2026c-0+deb13u1",
+        "tzdata-legacy": "2026c-0+deb13u1"
+      },
+      "nsswitch": "# Only libc built-in NSS backends are supported in this image.\npasswd: files\ngroup: files\nshadow: files\ngshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\nnetgroup: files\n",
+      "app_dynamic_imports": [
+        "_ITM_deregisterTMCloneTable",
+        "_ITM_registerTMCloneTable",
+        "_Unwind_Backtrace",
+        "_Unwind_DeleteException",
+        "_Unwind_GetDataRelBase",
+        "_Unwind_GetIP",
+        "_Unwind_GetIPInfo",
+        "_Unwind_GetLanguageSpecificData",
+        "_Unwind_GetRegionStart",
+        "_Unwind_GetTextRelBase",
+        "_Unwind_RaiseException",
+        "_Unwind_Resume",
+        "_Unwind_SetGR",
+        "_Unwind_SetIP",
+        "__cxa_finalize",
+        "__cxa_thread_atexit_impl",
+        "__errno_location",
+        "__gmon_start__",
+        "__libc_current_sigrtmax",
+        "__libc_start_main",
+        "__res_init",
+        "__tls_get_addr",
+        "__xpg_strerror_r",
+        "abort",
+        "accept4",
+        "access",
+        "bcmp",
+        "bind",
+        "calloc",
+        "clock_gettime",
+        "close",
+        "connect",
+        "dl_iterate_phdr",
+        "dlclose",
+        "dlerror",
+        "dlopen",
+        "dlsym",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_wait",
+        "eventfd",
+        "fchmod",
+        "fchown",
+        "fcntl",
+        "fcntl64",
+        "free",
+        "freeaddrinfo",
+        "fstat64",
+        "fsync",
+        "ftruncate64",
+        "gai_strerror",
+        "getaddrinfo",
+        "getauxval",
+        "getcwd",
+        "getenv",
+        "geteuid",
+        "getpeername",
+        "getpid",
+        "getrandom",
+        "getsockname",
+        "getsockopt",
+        "gettimeofday",
+        "gnu_get_libc_version",
+        "listen",
+        "localtime_r",
+        "log",
+        "lseek64",
+        "lstat64",
+        "malloc",
+        "memchr",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "mkdir",
+        "mmap64",
+        "mprotect",
+        "mremap",
+        "munmap",
+        "nanosleep",
+        "open",
+        "open64",
+        "pause",
+        "poll",
+        "posix_memalign",
+        "pow",
+        "pread64",
+        "pthread_attr_destroy",
+        "pthread_attr_getguardsize",
+        "pthread_attr_getstack",
+        "pthread_attr_init",
+        "pthread_attr_setstacksize",
+        "pthread_create",
+        "pthread_detach",
+        "pthread_getattr_np",
+        "pthread_join",
+        "pthread_key_create",
+        "pthread_key_delete",
+        "pthread_mutex_destroy",
+        "pthread_mutex_init",
+        "pthread_mutex_lock",
+        "pthread_mutex_trylock",
+        "pthread_mutex_unlock",
+        "pthread_mutexattr_destroy",
+        "pthread_mutexattr_init",
+        "pthread_mutexattr_settype",
+        "pthread_self",
+        "pthread_setname_np",
+        "pthread_setspecific",
+        "pwrite64",
+        "qsort",
+        "read",
+        "readlink",
+        "realloc",
+        "realpath",
+        "recv",
+        "rmdir",
+        "sched_getaffinity",
+        "sched_yield",
+        "send",
+        "setsockopt",
+        "shutdown",
+        "sigaction",
+        "sigaltstack",
+        "signal",
+        "socket",
+        "socketpair",
+        "stat64",
+        "statx",
+        "strchr",
+        "strcmp",
+        "strcspn",
+        "strlen",
+        "strncmp",
+        "strrchr",
+        "strspn",
+        "syscall",
+        "sysconf",
+        "time",
+        "unlink",
+        "utimes",
+        "write",
+        "writev"
+      ],
+      "configuration_image_id": "bc02782f78c6ca239afd1e068caad3e3bddca7d616bab0c005c880d1696fb354",
+      "podman_manifest_digest": "sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f",
+      "registry_identity": {
+        "reference": "docker.io/agaddy/bitcoin_price_tracker:latest",
+        "digest": "sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f"
+      },
+      "environment": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "RUST_LOG=info",
+        "DATABASE_PATH=/app/data/bitcoin_prices.db",
+        "BIND_ADDRESS=0.0.0.0:3000",
+        "LANG=C",
+        "LC_ALL=C"
+      ],
+      "size_bytes": 16655221
+    }
+  },
+  "base": {
+    "identity": {
+      "reference": "gcr.io/distroless/cc-debian13:nonroot",
+      "digest": "sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab",
+      "amd64_manifest": "sha256:436f1724f7a1a91438dbb5a7df2d5ca343d79491ee558355fd7b32552463a9d9"
+    },
+    "packages": {
+      "base-files": "13.8+deb13u7",
+      "ca-certificates": "20250419+deb13u1",
+      "gcc-14-base": "14.2.0-19",
+      "libc6": "2.41-12+deb13u4",
+      "libgcc-s1": "14.2.0-19",
+      "libgomp1": "14.2.0-19",
+      "libssl3t64": "3.5.7-1~deb13u3",
+      "libstdc++6": "14.2.0-19",
+      "libzstd1": "1.5.7+dfsg-1",
+      "media-types": "13.0.0",
+      "netbase": "6.5",
+      "tzdata": "2026f-0+deb13u1",
+      "tzdata-legacy": "2026f-0+deb13u1",
+      "zlib1g": "1:1.3.dfsg+really1.3.1-1+deb13u1"
+    },
+    "scan_exit_code": 2,
+    "additional_unreviewed_high_matches": [
+      {
+        "id": "CVE-2026-102010",
+        "package": "libgomp1",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-102010",
+        "package": "libstdc++6",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-95619",
+        "package": "libgomp1",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-95619",
+        "package": "libstdc++6",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      }
+    ]
+  },
+  "native_limitations": [
+    "Applications retain dlopen/dlsym, but SQLite extension loading is disabled and not exposed.",
+    "Libc retains gettext/monetary code. Imports and library checks support bounded applicability, not proof about all indirect loading paths.",
+    "Only Linux/amd64 runtime-tested; no positive IPv6 transport test.",
+    "Published v2.9.9 source predates the bundled SQLite upgrade. Strict RustSec below applies to the upgraded source lockfile, not a replacement of published application dependencies."
+  ],
+  "retained_matchers": [
+    {
+      "id": "CVE-2026-102010",
+      "package": "gcc-14-base",
+      "version": "14.2.0-19",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie GCC 14 vulnerable/no-dsa; unstable fixed in 14.4.0-3.",
+      "exposure": "gcc-14-base owns documentation/licensing. libgcc-s1 is the unwinder, not libstdc++ binary-heap erase_if; no C++ symbols/runtime or container path.",
+      "removal_issue": "bitcoin_price_tracker-hcw",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-102010"
+    },
+    {
+      "id": "CVE-2026-102010",
+      "package": "libgcc-s1",
+      "version": "14.2.0-19",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie GCC 14 vulnerable/no-dsa; unstable fixed in 14.4.0-3.",
+      "exposure": "gcc-14-base owns documentation/licensing. libgcc-s1 is the unwinder, not libstdc++ binary-heap erase_if; no C++ symbols/runtime or container path.",
+      "removal_issue": "bitcoin_price_tracker-hcw",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-102010"
+    },
+    {
+      "id": "CVE-2026-19499",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie vulnerable/no-dsa; unstable fixed in 2.43-5.",
+      "exposure": "No application monetary-formatting imports or native monetary-format input. Browser Intl renders currencies; libc retains strfmon code.",
+      "removal_issue": "bitcoin_price_tracker-w9n",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-19499"
+    },
+    {
+      "id": "CVE-2026-5435",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie vulnerable/no-dsa; unstable fixed in 2.43-3.",
+      "exposure": "No DNS-printing imports or exports in the five shipped ELF files; libresolv absent; normal files/DNS fixtures pass.",
+      "removal_issue": "bitcoin_price_tracker-w9n",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-5435"
+    },
+    {
+      "id": "CVE-2026-84243",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "No supported or unstable fix.",
+      "exposure": "No application gettext/text-domain/locale-selection imports; LANG=C and LC_ALL=C; no client-controlled environment/catalogs. Libc retains gettext code.",
+      "removal_issue": "bitcoin_price_tracker-wbt",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-84243"
+    },
+    {
+      "id": "CVE-2026-95619",
+      "package": "gcc-14-base",
+      "version": "14.2.0-19",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie GCC 14 vulnerable/no-dsa; unstable fixed in 14.4.0-3.",
+      "exposure": "gcc-14-base owns documentation/licensing. libgcc-s1 is the unwinder, not libstdc++ aligned allocation; no C++ symbols/runtime or libgomp.",
+      "removal_issue": "bitcoin_price_tracker-hcw",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-95619"
+    },
+    {
+      "id": "CVE-2026-95619",
+      "package": "libgcc-s1",
+      "version": "14.2.0-19",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": "wont-fix"
+      },
+      "suppressed": true,
+      "decision": "retain existing matcher",
+      "owner": "ggaddy",
+      "vendor_status": "Trixie GCC 14 vulnerable/no-dsa; unstable fixed in 14.4.0-3.",
+      "exposure": "gcc-14-base owns documentation/licensing. libgcc-s1 is the unwinder, not libstdc++ aligned allocation; no C++ symbols/runtime or libgomp.",
+      "removal_issue": "bitcoin_price_tracker-hcw",
+      "review_date": "2026-11-10 America/Chicago",
+      "review_before": "2026-12-07",
+      "source": "https://security-tracker.debian.org/tracker/CVE-2026-95619"
+    }
+  ],
+  "vendor_sources": {
+    "CVE-2026-84243": {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-84243",
+      "sha256": "98865d37ee29c5c0734e80b8389d5a071afe6b2edd358bb63d1ea47cf7ac7b47",
+      "retrieved_at_utc": "2026-11-11T05:42:03.190521+00:00"
+    },
+    "CVE-2026-5435": {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-5435",
+      "sha256": "2361f3d31bc16c0ed30e5f79e4398e73155b117f7c2097c4208f9d756cdd0959",
+      "retrieved_at_utc": "2026-11-11T05:42:03.191036+00:00"
+    },
+    "CVE-2026-19499": {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-19499",
+      "sha256": "5ae203e2503db74b024563d3a6cbac974337438d5f3db69b93cbdd0ec38aecd7",
+      "retrieved_at_utc": "2026-11-11T05:42:03.191287+00:00"
+    },
+    "CVE-2026-95619": {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+      "sha256": "52df0ff43dc975102e618af335841b8939b67019a67c257dde05140b11eca57c",
+      "retrieved_at_utc": "2026-11-11T05:42:03.190921+00:00"
+    },
+    "CVE-2026-102010": {
+      "url": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+      "sha256": "5575314f9d4233e75b9efedc796777dbc63f9105a6634e0e56f263f40108250b",
+      "retrieved_at_utc": "2026-11-11T05:42:03.189940+00:00"
+    }
+  },
+  "scanner": {
+    "version": "0.121.3",
+    "database_update": "No vulnerability database update available; age validation retained.",
+    "database": {
+      "schemaVersion": "v6.1.10",
+      "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-10T00:20:15Z_1794291680.tar.zst?checksum=sha256%3Af536af5882d8e03ad3e3ea5b32b3fc1965d55321ddab67ad7a5d7aeec3725190",
+      "built": "2026-11-10T06:21:20Z",
+      "valid": true
+    },
+    "debian_provider": {
+      "captured": "2026-11-10T00:20:45Z",
+      "input": "xxh64:ca91ea202a228370"
+    },
+    "shared_findings": [
+      {
+        "id": "CVE-2010-4756",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2018-20796",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2019-1010022",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2019-1010023",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2019-1010024",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2019-1010025",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2019-9192",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "not-fixed"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-102010",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-102010",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-114690",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-114690",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-114691",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-114691",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-115455",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-115455",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "Negligible",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-115456",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "Low",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-115456",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "Low",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-18374",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-19499",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-19542",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-5435",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-6238",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-6368",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Low",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-6791",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-77117",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-80489",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-84243",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-8674",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-86805",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-89092",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Medium",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-95619",
+        "package": "gcc-14-base",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-95619",
+        "package": "libgcc-s1",
+        "version": "14.2.0-19",
+        "severity": "High",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": true
+      },
+      {
+        "id": "CVE-2026-95818",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Low",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      },
+      {
+        "id": "CVE-2026-97399",
+        "package": "libc6",
+        "version": "2.41-12+deb13u4",
+        "severity": "Low",
+        "fix": {
+          "versions": [],
+          "state": "wont-fix"
+        },
+        "suppressed": false
+      }
+    ],
+    "counts": {
+      "High_suppressed": 7,
+      "Medium": 13,
+      "Low": 5,
+      "Negligible": 9
+    },
+    "scan_results": {
+      "candidate-before": {
+        "exit_code": 0,
+        "raw_sha256": "0a4671fbff186ea6edaaaabff872c3c4d2f8fac16ff000cba904b5148733241d",
+        "findings_identical_before_after": true
+      },
+      "published-before": {
+        "exit_code": 0,
+        "raw_sha256": "f311ff6017e7a7b82778c849cbf47447c4aa942398c5da3d6e99ae9d2d785622",
+        "findings_identical_before_after": true
+      },
+      "candidate-after": {
+        "exit_code": 0,
+        "raw_sha256": "553c064b192ecc61a38eac4c262ed5be46bbf0fc858f40e3c6a0a43e8fb3bcb8",
+        "findings_identical_before_after": true
+      },
+      "published-after": {
+        "exit_code": 0,
+        "raw_sha256": "a2148e55f1c713f6905f3051c310dc044b6ca69f2365316a3ffcdff2c0ea0505",
+        "findings_identical_before_after": true
+      },
+      "base": {
+        "exit_code": 2,
+        "raw_sha256": "700cfe9712a39b7a8cc612c6f989492a09c4bd55aa4390fdc3da1318f04b3f19",
+        "findings_identical_before_after": null
+      }
+    }
+  },
+  "validation": {
+    "candidate_runtime_and_network": {
+      "source_report": "docs/security/dependency-upgrades-2026-11-10.json",
+      "source_report_sha256": "e296986b9c848cc1f2c399b99cab218f37c003b3e7502c3f4c2653d475cd6601",
+      "exact_image_id": "486e20ec619a7b86117d95599b95d4b6ea6ccf843bd0ae3255c7bb8727fd1018",
+      "all_build_input_hashes_match": true,
+      "runtime": {
+        "exit_code": 0,
+        "output": [
+          "Exact image contains only the release executable and four reviewed native libraries; NSS uses built-in files/dns.",
+          "AUD-07 release imports and linked-library exposure checks passed.",
+          "Non-root startup, configured bind address, empty health and price responses passed.",
+          "Seeded quote serving, cached startup registration and pause/resume passed without upstream calls.",
+          "Graceful shutdown, restart persistence and unhealthy database detection passed.",
+          "Health probe recovery and configuration failure passed.",
+          "Non-root bind-mount ownership and startup passed."
+        ]
+      },
+      "network": {
+        "exit_code": 0,
+        "output": [
+          "Host-file lookup, DNS A/AAAA, verified Rustls TLS and certificate rejection passed.",
+          "Verified image: 486e20ec619a7b86117d95599b95d4b6ea6ccf843bd0ae3255c7bb8727fd1018",
+          "Loaded native libraries: [\"/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2\", \"/usr/lib/x86_64-linux-gnu/libc.so.6\", \"/usr/lib/x86_64-linux-gnu/libgcc_s.so.1\", \"/usr/lib/x86_64-linux-gnu/libm.so.6\"]",
+          "Isolated DNS queries: {\"dns-only.runtime.test:1\": 3, \"dns-only.runtime.test:28\": 3, \"wrong-name.runtime.test:1\": 1, \"wrong-name.runtime.test:28\": 1}",
+          "Verified TLS requests: {\"dns-only.runtime.test:8443\": 1, \"hosts-only.runtime.test:8443\": 1}"
+        ]
+      }
+    },
+    "published_runtime": {
+      "exit_code": 0,
+      "output": [
+        "Exact image contains only the release executable and four reviewed native libraries; NSS uses built-in files/dns.",
+        "AUD-07 release imports and linked-library exposure checks passed.",
+        "Non-root startup, configured bind address, empty health and price responses passed.",
+        "Seeded quote serving, cached startup registration and pause/resume passed without upstream calls.",
+        "Graceful shutdown, restart persistence and unhealthy database detection passed.",
+        "Health probe recovery and configuration failure passed.",
+        "Non-root bind-mount ownership and startup passed."
+      ]
+    },
+    "published_network": {
+      "exit_code": 0,
+      "output": [
+        "Host-file lookup, DNS A/AAAA, verified Rustls TLS and certificate rejection passed.",
+        "Verified image: bc02782f78c6ca239afd1e068caad3e3bddca7d616bab0c005c880d1696fb354",
+        "Loaded native libraries: [\"/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2\", \"/usr/lib/x86_64-linux-gnu/libc.so.6\", \"/usr/lib/x86_64-linux-gnu/libgcc_s.so.1\", \"/usr/lib/x86_64-linux-gnu/libm.so.6\"]",
+        "Isolated DNS queries: {\"dns-only.runtime.test:1\": 3, \"dns-only.runtime.test:28\": 3, \"wrong-name.runtime.test:1\": 1, \"wrong-name.runtime.test:28\": 1}",
+        "Verified TLS requests: {\"dns-only.runtime.test:8443\": 1, \"hosts-only.runtime.test:8443\": 1}"
+      ]
+    },
+    "individual_negative_controls": [
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-84243",
+          "package": "libc6",
+          "version": "2.41-12+deb13u4"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-84243",
+            "package": "libc6",
+            "version": "2.41-12+deb13u4"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-5435",
+          "package": "libc6",
+          "version": "2.41-12+deb13u4"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-5435",
+            "package": "libc6",
+            "version": "2.41-12+deb13u4"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-19499",
+          "package": "libc6",
+          "version": "2.41-12+deb13u4"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-19499",
+            "package": "libc6",
+            "version": "2.41-12+deb13u4"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-95619",
+          "package": "gcc-14-base",
+          "version": "14.2.0-19"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-95619",
+            "package": "gcc-14-base",
+            "version": "14.2.0-19"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-95619",
+          "package": "libgcc-s1",
+          "version": "14.2.0-19"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-95619",
+            "package": "libgcc-s1",
+            "version": "14.2.0-19"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-102010",
+          "package": "gcc-14-base",
+          "version": "14.2.0-19"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-102010",
+            "package": "gcc-14-base",
+            "version": "14.2.0-19"
+          }
+        ]
+      },
+      {
+        "removed_matcher": {
+          "id": "CVE-2026-102010",
+          "package": "libgcc-s1",
+          "version": "14.2.0-19"
+        },
+        "exit_code": 2,
+        "unsuppressed_high": [
+          {
+            "id": "CVE-2026-102010",
+            "package": "libgcc-s1",
+            "version": "14.2.0-19"
+          }
+        ]
+      }
+    ],
+    "deadline_controls": [
+      {
+        "deadline": "2026-11-10",
+        "today": "2026-11-09",
+        "exit_code": 0,
+        "output": "Image advisory exceptions must be reviewed before 2026-11-10; see SECURITY.md"
+      },
+      {
+        "deadline": "2026-11-10",
+        "today": "2026-11-10",
+        "exit_code": 1,
+        "output": "Image advisory review expired on 2026-11-10; recheck exposure and available updates"
+      },
+      {
+        "deadline": "2026-11-10",
+        "today": "2026-11-11",
+        "exit_code": 1,
+        "output": "Image advisory review expired on 2026-11-10; recheck exposure and available updates"
+      },
+      {
+        "deadline": "2026-12-07",
+        "today": "2026-12-06",
+        "exit_code": 0,
+        "output": "Image advisory exceptions must be reviewed before 2026-12-07; see SECURITY.md"
+      },
+      {
+        "deadline": "2026-12-07",
+        "today": "2026-12-07",
+        "exit_code": 1,
+        "output": "Image advisory review expired on 2026-12-07; recheck exposure and available updates"
+      },
+      {
+        "deadline": "2026-12-07",
+        "today": "2026-12-08",
+        "exit_code": 1,
+        "output": "Image advisory review expired on 2026-12-07; recheck exposure and available updates"
+      },
+      {
+        "deadline": null,
+        "today": "2026-11-10",
+        "exit_code": 1,
+        "output": "Image advisory exceptions need a review date and SECURITY.md rationale"
+      }
+    ],
+    "actual_deadline_gate": {
+      "exit_code": 0,
+      "output": "Image advisory exceptions must be reviewed before 2026-12-07; see SECURITY.md"
+    },
+    "cargo_audit": {
+      "version": "0.23.0",
+      "exit_code": 0,
+      "report": {
+        "database": {
+          "advisory-count": 1446,
+          "last-commit": "28d73fc95e5972af3403225a217def57dcaba3c4",
+          "last-updated": "2026-11-10T14:45:03+01:00"
+        },
+        "lockfile": {
+          "dependency-count": 207
+        },
+        "settings": {
+          "target_arch": [],
+          "target_os": [],
+          "severity": null,
+          "ignore": [],
+          "informational_warnings": [
+            "unmaintained",
+            "unsound",
+            "notice"
+          ]
+        },
+        "vulnerabilities": {
+          "found": false,
+          "count": 0,
+          "list": []
+        },
+        "warnings": {}
+      }
+    },
+    "npm_audit": {
+      "exit_code": 0,
+      "report": {
+        "auditReportVersion": 2,
+        "vulnerabilities": {},
+        "metadata": {
+          "vulnerabilities": {
+            "info": 0,
+            "low": 0,
+            "moderate": 0,
+            "high": 0,
+            "critical": 0,
+            "total": 0
+          },
+          "dependencies": {
+            "prod": 1,
+            "dev": 2,
+            "optional": 0,
+            "peer": 0,
+            "peerOptional": 0,
+            "total": 2
+          }
+        }
+      }
+    },
+    "app_regressions": "Not rerun: only policy/documentation changed; all build input hashes match the tested aa059f5 candidate and the preceding upgrade evidence records formatting, Clippy, 112 Rust tests, 45 Chromium tests and Selenium passing."
+  },
+  "build_input_evidence": {
+    "file": "docs/security/dependency-upgrades-2026-11-10.json",
+    "sha256": "e296986b9c848cc1f2c399b99cab218f37c003b3e7502c3f4c2653d475cd6601",
+    "all_build_input_hashes_match": true
+  },
+  "review_tool_sha256": {
+    "scripts/check_image_exceptions.py": "11c872056e38b4b59a5c2589e5be6abdc3cbd568aa7105b5d4151ede4a569430",
+    "scripts/verify_runtime.py": "e3ce7a0a5023fd5c0c253bd68e388ad15105f606addce79a76e88be6495a8cb3",
+    "scripts/verify_runtime_network.py": "84b43a84d0283234c6f8619945293b5532c741f10fbe04fc5d0b26e7ccae77bb"
+  },
+  "reproduction_commands": [
+    "python3 scripts/check_image_exceptions.py",
+    "cargo audit --deny warnings",
+    "npm audit --prefix tests/browser --audit-level=low",
+    "grype db update",
+    "grype docker-archive:candidate.tar --config .grype.yaml --fail-on high -o json",
+    "grype docker-archive:published.tar --config .grype.yaml --fail-on high -o json",
+    "grype docker-archive:base.tar --config .grype.yaml --fail-on high -o json",
+    "python3 scripts/verify_runtime.py --engine podman --image docker.io/agaddy/bitcoin_price_tracker@sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f",
+    "python3 scripts/verify_runtime_network.py --engine podman --image docker.io/agaddy/bitcoin_price_tracker@sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f"
+  ]
+}

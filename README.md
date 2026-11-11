@@ -14,7 +14,7 @@ Install Rust with rustup, then run from the repository root:
 cargo run --locked
 ```
 
-Open `http://localhost:3000` in a visible tab. The repository pins Rust 1.85.1 in
+Open `http://localhost:3000` in a visible tab. The repository pins Rust 1.99.1 in
 [rust-toolchain.toml](rust-toolchain.toml); rustup selects that toolchain.
 Prices are stored at `data/bitcoin_prices.db` by default.
 
@@ -114,7 +114,7 @@ user namespace (also suitable for rootless Podman):
 ```bash
 mkdir -p data
 docker run --rm --network none --user 0:0 -v "$PWD/data:/app/data" \
-  python:3.12.3-slim-bookworm@sha256:afc139a0a640942491ec481ad8dda10f2c5b753f5c969393b12480155fe15a63 \
+  python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d \
   chown -R 10001:10001 /app/data
 docker run -d --name btc-tracker -p 3000:3000 -v "$PWD/data:/app/data" \
   --read-only --cap-drop ALL --security-opt no-new-privileges btc-matrix
@@ -219,7 +219,7 @@ See the [API contract](docs/source-contract.md) for response fields and errors.
 
 ## Development and tests
 
-Run from the repository root. Rust 1.85.1, rustfmt, and Clippy are pinned by
+Run from the repository root. Rust 1.99.1, rustfmt, and Clippy are pinned by
 [rust-toolchain.toml](rust-toolchain.toml); Cargo declares the same minimum Rust
 version. Use locked dependencies:
 
@@ -309,9 +309,9 @@ cargo test --locked selenium_dashboard_smoke_test -- --ignored
 
 [Kache](https://github.com/kunobi-ninja/kache) is optional. Install a prebuilt
 release, or use Rust 1.95 or newer for
-`cargo install kache --locked --version 1.0.0`, then run `kache init`.
-The application still uses Rust 1.85.1. Use `kache doctor` and `kache stats` to
-inspect setup and cache hits.
+`cargo install kache --locked --version 2.0.0`, then run `kache init`.
+The pinned application toolchain satisfies this requirement. Use `kache doctor`
+and `kache stats` to inspect setup and cache hits.
 
 ### CI and advisories
 

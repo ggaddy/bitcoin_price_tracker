@@ -10,9 +10,9 @@ in Beads; setup and operations are in [README.md](README.md).
 
 CI runs `cargo audit --deny warnings` and `npm audit --audit-level=low` on pull
 requests, pushes to master, and weekly. These jobs fail visibly; neither uses
-`continue-on-error`. RustSec uses cargo-audit 0.22.2 with Rust 1.94.0, separately
-from the application's pinned Rust 1.85.1 toolchain, to read current advisory
-formats. Browser test packages are included in the npm scan.
+`continue-on-error`. RustSec uses cargo-audit 0.23.0 with the application's
+pinned Rust 1.99.1 toolchain to read current advisory formats. Browser test
+packages are included in the npm scan.
 
 There are currently no accepted Rust or npm advisories. Before adding any advisory ID to
 `.cargo/audit.toml`, record its affected dependency/path, why upgrading or removing
@@ -31,7 +31,7 @@ network access; an image alone does not provide workload isolation.
 
 Release tags run the reusable CI workflow for that exact commit. Publication
 requires the commit to be current `master`, then builds a local candidate, runs
-the runtime checks, and scans that same image with Grype 0.118.0 before logging
+the runtime checks, and scans that same image with Grype 0.121.3 before logging
 in and pushing it without a rebuild. PR/master CI also scans its final image;
 weekly CI additionally resolves and scans the published `latest` digest.
 Unreviewed High/Critical findings fail these jobs, including findings without
@@ -49,17 +49,20 @@ configurable; secure the maintainer's GitHub account and Docker Hub token.
 ## Runtime advisory policy
 
 The authoritative exception matchers and review deadline are in
-[.grype.yaml](.grype.yaml). The checked-in deadline is **2026-11-10**; review must
+[.grype.yaml](.grype.yaml). The reviewed deadline is **2026-12-07**; review must
 finish before that date. [The deadline checker](scripts/check_image_exceptions.py)
 fails CI/release checks on or after expiry. Owner: repository maintainer `ggaddy`.
-Beads issue `bitcoin_price_tracker-fmq` tracks the outstanding full review;
+The [November 10 full review](#november-10-2026-full-exception-renewal)
+reassesses every retained matcher against the upgraded candidate and published
+v2.9.9. Beads issue `bitcoin_price_tracker-12z` tracks the next full review;
 `bitcoin_price_tracker-wbt` and [GitHub #40](https://github.com/ggaddy/bitcoin_price_tracker/issues/40)
 track removal of the CVE-2026-84243 exception. Remaining removal tasks are
 `bitcoin_price_tracker-w9n` (other libc) and `bitcoin_price_tracker-hcw` (GCC/C++).
-The [library audit](#november-7-2026-complete-runtime-library-audit) removes the
-zlib and four unused GCC-package matchers and passes strict scanning locally.
-`bitcoin_price_tracker-31u` tracks
-releasing and verifying the replacement for the still-affected published image.
+The [library audit](#november-7-2026-complete-runtime-library-audit) removed the
+zlib and four unused GCC-package matchers. The published v2.9.9 image, freshly
+resolved to `sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f`,
+also excludes those packages. This is a registry-image observation, not a
+production deployment inventory.
 
 Retained exceptions are applicability decisions, not patched packages or a clean
 scan. Match only the reviewed advisory, Debian binary package, and exact version;
@@ -76,7 +79,8 @@ must also check fresh scan/vendor evidence for both the candidate and published
 images. The [November 7 assessment](#november-7-2026-runtime-advisory-assessment)
 records the original failing scan; the [subsequent remediation](#november-7-2026-zlib-remediation)
 passes the local candidate scan. The [complete library audit](#november-7-2026-complete-runtime-library-audit)
-further reduces native modules and exceptions. None extends the checked-in deadline.
+further reduces native modules and exceptions. Those dated steps did not renew
+the deadline; the full November 10 reassessment below justifies the new period.
 
 ## Recorded dependency and applicability reviews
 
@@ -459,6 +463,121 @@ v2.9.7 digest `sha256:e43323e73d6371a6c9b63781a76a61f4f90f97c24275611a644618dd10
 it remains affected and fails the reduced strict policy until an authorized
 release replaces it. `bitcoin_price_tracker-31u` tracks that release and
 `bitcoin_price_tracker-fmq` remains open. No image was published or deployed.
+
+### November 10, 2026 dependency and native-library refresh
+
+Reviewed on **2026-11-10 America/Chicago** for `bitcoin_price_tracker-qf0`.
+[Exact candidate evidence](docs/security/dependency-upgrades-2026-11-10.json)
+records the build inputs, image and ELF hashes, imports, package findings,
+scanner database, and validation commands. This review covers the local
+Linux/amd64 upgrade candidate; it does not renew exception deadlines or establish
+published-image or deployment state.
+
+The refresh uses Rust **1.99.1**, Reqwest **0.13.5**, Rusqlite **0.41.1**, and
+Thirtyfour **0.38.1**, with 100 locked Cargo package entries updated. Bundled
+`libsqlite3-sys` **0.39.1** supplies SQLite **3.54.1**, fixing
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html).
+Strict RustSec and npm audits pass with no exceptions. Playwright **1.65.0**,
+Node **26.13.0** LTS, Selenium **4.52.0-20261101**, Kache **2.0.0**, and the
+Python **3.15.0** verification helper are also validated. Axum still requires
+exactly Matchit 0.8.4; Cargo cannot select 0.8.6 under that upstream constraint.
+Cybercore CSS 0.3.0 remains the current stable release.
+
+The supported distroless base is updated to index
+`sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab`.
+It contains the [DSA-6613-1](https://security-tracker.debian.org/tracker/DSA-6613-1)
+zlib fix; the exact-version pruning guard now recognizes that reviewed package.
+The final image still removes zlib, OpenSSL, C++/OpenMP, compression and unused
+libc modules. Reqwest now uses Rustls with statically linked AWS-LC and platform
+certificate verification. The final executable and DNS/TLS helper still load only
+libc, libm, libgcc_s and the loader. Both exact-image verifiers pass, including
+private-CA acceptance, hostname/untrusted-CA rejection, native imports, locale,
+NSS, persistence, non-root isolation and shutdown.
+
+AWS-LC adds fixed-format integer `sscanf` calls for process CPU-capability
+settings; HTTP cannot set those environment values or format strings. Its weak
+`OPENSSL_memory_*` allocator hooks do not introduce a dynamic OpenSSL dependency.
+No gettext, monetary-formatting, DNS-printing, charset/locale or C++ imports
+appear. SQLite extension loading stays disabled; `dlopen`/`dlsym` remain, so the
+checks do not prove all indirect native paths safe. Current Debian records still
+offer no trixie fix for the retained libc/GCC findings. Their previously reviewed
+exposure conditions remain unchanged in the new executable.
+
+Grype **0.121.3**, with its valid November 10 database, reports **34 matches**:
+seven existing suppressed High matches, 13 Medium, five Low and nine Negligible.
+The strict `--fail-on high` scan passes using the unchanged seven matchers. A
+control scan removing only the gettext exception fails on that High finding.
+No exception is added or broadened. The separate deadline checker still fails
+with `Image advisory review expired on 2026-11-10`; the renewal in
+[PR #46](https://github.com/ggaddy/bitcoin_price_tracker/pull/46), tracked by
+`bitcoin_price_tracker-51c`, must be integrated before CI/release can pass that
+gate. No image was published or deployed.
+
+### November 10, 2026 full exception renewal
+
+Reviewed **2026-11-10 America/Chicago** for `bitcoin_price_tracker-51c`. Owner for
+each of the **seven retained matchers**: `ggaddy`. Review again before
+**2026-12-07**, tracked by `bitcoin_price_tracker-12z`. The
+[renewal evidence](docs/security/exception-renewal-2026-11-10.json) records current
+vendor-page hashes, exact image identities, package versions, native symbols,
+scans and controls. This refreshes the earlier renewal proposed in
+[PR #46](https://github.com/ggaddy/bitcoin_price_tracker/pull/46) for the upgraded
+dependencies and current published image. It supersedes the expired November 10
+review date locally; remote policy changes require integration.
+
+The candidate is the exact image validated by the preceding dependency review,
+configuration `sha256:486e20ec619a7b86117d95599b95d4b6ea6ccf843bd0ae3255c7bb8727fd1018`.
+Its build-input hashes still match the worktree. Published `latest` is v2.9.9,
+source `37901b2`, registry digest
+`sha256:619130f6b8d2eab310bd0a93fd63e8adf61a37785e00374a876a2c0b9079f25f`.
+Both images ship exactly five ELF files: the application and four native
+libraries. All four library hashes match between these images. The application
+executables differ because the candidate includes the dependency upgrades.
+
+Fresh Debian evidence still offers no supported trixie fix for the five
+advisories below. The latest supported distroless base is already the candidate's
+pinned index `sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab`;
+its retained libc/GCC versions match the published image. A base-digest update
+cannot currently retire these seven matches. Each existing applicability decision
+is retained after inspecting both images:
+
+| Advisory | Exact binary package/version | Exposure, mitigation and removal tracking |
+| --- | --- | --- |
+| [CVE-2026-84243](https://security-tracker.debian.org/tracker/CVE-2026-84243) | `libc6` `2.41-12+deb13u4` | Trixie and unstable remain unfixed. Gettext remains in libc, but neither application imports gettext/text-domain or locale-selection functions. `LANG=C` and `LC_ALL=C` remain enforced; HTTP cannot set process environment or catalog paths. Retain; `bitcoin_price_tracker-wbt` / GitHub #40. |
+| [CVE-2026-5435](https://security-tracker.debian.org/tracker/CVE-2026-5435) | `libc6` `2.41-12+deb13u4` | Trixie remains `<no-dsa>`; unstable fix `2.43-3`. No affected DNS-printing imports or exports occur in the shipped ELF files; `libresolv` is absent. Built-in files/DNS fixtures pass. Retain the source-attributed match; `bitcoin_price_tracker-w9n`. |
+| [CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499) | `libc6` `2.41-12+deb13u4` | Trixie remains `<no-dsa>`; unstable fix `2.43-5`. Monetary-formatting code remains in libc, but neither application imports it or accepts native monetary-format strings. Currency rendering uses browser `Intl`. Retain; `bitcoin_price_tracker-w9n`. |
+| [CVE-2026-95619](https://security-tracker.debian.org/tracker/CVE-2026-95619) | `gcc-14-base` `14.2.0-19` | Trixie remains `<no-dsa>`; unstable fix `14.4.0-3`. The package supplies documentation/licensing, not the affected C++ aligned allocation implementation. Retain the source-attributed match; `bitcoin_price_tracker-hcw`. |
+| [CVE-2026-95619](https://security-tracker.debian.org/tracker/CVE-2026-95619) | `libgcc-s1` `14.2.0-19` | Same vendor status. The retained library implements unwinding, not C++ aligned allocation. Neither image has C++ imports/exports, libstdc++ or libgomp. Retain; `bitcoin_price_tracker-hcw`. |
+| [CVE-2026-102010](https://security-tracker.debian.org/tracker/CVE-2026-102010) | `gcc-14-base` `14.2.0-19` | Trixie remains `<no-dsa>`; unstable fix `14.4.0-3`. The documentation-only package supplies no affected libstdc++ binary-heap `erase_if` code. Retain the source-attributed match; `bitcoin_price_tracker-hcw`. |
+| [CVE-2026-102010](https://security-tracker.debian.org/tracker/CVE-2026-102010) | `libgcc-s1` `14.2.0-19` | Same vendor status. The unwinder contains no affected C++ container implementation; no C++ runtime or application code path uses it. Retain; `bitcoin_price_tracker-hcw`. |
+
+Grype **0.121.3** confirms its valid November 10 database is still current.
+Candidate and published scans both pass the original policy: **34 matches** each,
+including seven existing suppressed High matches, 13 Medium, five Low and nine
+Negligible. There are no unaccepted High/Critical findings. The untrimmed base
+still fails on four additional High matches in removed C++/OpenMP packages;
+their exceptions are not restored. Each of seven independent controls removing
+one retained matcher fails on exactly that package/advisory. Renewed-policy scans
+produce the same findings; matcher bodies, visibility and thresholds are unchanged.
+
+The candidate's completed runtime/DNS/TLS checks are reused only after verifying
+its exact image identity and every build-input hash. Both suites are freshly run
+against the published digest and pass, including certificate rejection and the
+four-library inventory. Both executables lack the guarded gettext, monetary,
+DNS-printing, charset/locale and C++ imports. C locale, built-in NSS and disabled
+SQLite extension loading remain required. Libc retains affected code and the
+executables retain `dlopen`/`dlsym`; this remains a bounded applicability review.
+Only Linux/amd64 was runtime-tested; positive IPv6 transport was not exercised.
+Strict RustSec/npm scans pass for the upgraded source dependencies; this does not
+establish that previously published application dependencies have been upgraded.
+
+The **December 7** date preserves the earlier proposed renewal deadline, leaving
+27 days after this refresh. It follows the completed vendor and exact-image
+review, passing scans before the date change, and enforced exposure guards.
+Review sooner on supported fixes, new advisories, or native/runtime/locale/NSS
+changes, and remove obsolete matchers promptly. Deadline controls still pass
+before expiry and fail on/after expiry or when the review date is absent. This
+changes policy and documentation only; no image was published or deployed.
 
 ## Application containment
 

@@ -119,7 +119,12 @@ test('registration renders its cached price without an initial price GET and kee
   await text(app.page, 'sources', 'Coinbase');
   assert.equal(app.prices(), 0);
   assert.equal(app.presence[0].include_price, true);
+  // Clock advancement fires fetch; wait for Chromium to deliver the routed events.
+  const price = app.page.waitForResponse(response => response.url().endsWith('/api/price'));
+  const heartbeat = app.page.waitForResponse(response => response.url().endsWith('/api/presence')
+    && response.request().postDataJSON()?.active && response.request().postDataJSON()?.include_price === undefined);
   await tick(app.page, 5100);
+  await Promise.all([price, heartbeat]);
   assert.equal(app.prices(), 1);
   assert.ok(app.presence.some(body => body.active && body.include_price === undefined));
   assert.equal(app.maxPrices(), 1);
@@ -302,7 +307,9 @@ test('hide aborts delayed prices, late responses cannot replace IDLE, show resum
   assert.ok(app.presence.some(body => !body.active));
   await app.page.evaluate(() => { window.changeVisibility(false); window.changeVisibility(false); });
   await text(app.page, 'status', 'LIVE');
+  const price = app.page.waitForResponse(response => response.url().endsWith('/api/price'));
   await tick(app.page, 5100);
+  await price;
   assert.equal(app.prices(), 3);
   assert.equal(app.maxPrices(), 1);
   assert.equal(app.maxPresence(), 1);

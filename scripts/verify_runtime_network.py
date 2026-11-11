@@ -104,7 +104,7 @@ def verify(engine, image):
             (path / 'resolv.conf').write_text('nameserver 127.0.0.1\noptions timeout:1 attempts:1\n')
             (path / 'hosts').write_text('127.0.0.1 localhost hosts-only.runtime.test\n::1 localhost\n')
             fixture = command('run', '-d', '--network', 'none', '-v', directory + ':/fixture',
-                              'docker.io/library/python:3.12.3-slim-bookworm', 'python3', '-c', FIXTURE).strip()
+                              'docker.io/library/python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d', 'python3', '-c', FIXTURE).strip()
             deadline = time.monotonic() + 15
             while not (path / 'ready').exists():
                 if time.monotonic() >= deadline:
