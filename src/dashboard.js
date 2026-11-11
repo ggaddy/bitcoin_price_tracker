@@ -10,6 +10,7 @@
   };
   let sessionId, running = false, generation = 0, ageTimer = null;
   let lastData = null, receivedAt = 0, priceError = "", presenceError = "";
+  let nextPriceRequest = 0, appliedPriceRequest = 0;
 
   function status(label) {
     // Only changes are announced by role=status, never routine heartbeats.
@@ -126,8 +127,12 @@
     el.warnings.replaceChildren(...(warnings.length ? warnings : ["None"]).map(text => node("li", "", text)));
   }
 
-  function receivePrice(data) {
+  function receivePrice(data, request) {
+    // Startup presence and the independent GET worker can overlap on resume.
+    // An earlier request must not replace a later request's accepted report.
+    if (request < appliedPriceRequest) return;
     validate(data);
+    appliedPriceRequest = request;
     // An unavailable response cannot erase previously received quotes.
     if (data.status === "UNAVAILABLE" && lastData?.sources.length) {
       priceError = "Price service unavailable; retained quotes may be out of date.";
@@ -145,6 +150,7 @@
     worker.timer = null;
     worker.busy = true;
     const owner = generation;
+    const priceRequest = kind === "price" || includePrice ? ++nextPriceRequest : null;
     const controller = new AbortController();
     worker.controller = controller;
     const deadline = setTimeout(() => controller.abort(), worker.timeout);
@@ -164,10 +170,10 @@
             const data = JSON.parse(body);
             if (data.price) {
               try {
-                receivePrice(data.price);
+                receivePrice(data.price, priceRequest);
                 startupPriceDelay = data.price.refreshing === true ? 1000 : 5000;
               } catch {
-                priceError = "Startup price unavailable. Retrying automatically.";
+                if (priceRequest >= appliedPriceRequest) priceError = "Startup price unavailable. Retrying automatically.";
               }
             }
           }
@@ -177,13 +183,13 @@
         const data = validate(await response.json());
         if (response.status === 503 && data.status !== "UNAVAILABLE") throw new Error("Invalid unavailable response");
         if (running && owner === generation) {
-          receivePrice(data);
+          receivePrice(data, priceRequest);
         }
       }
     } catch {
       if (running && owner === generation) {
         if (kind === "presence") presenceError = "Viewer heartbeat unavailable. Retrying automatically.";
-        else priceError = "Price update unavailable; retained quotes may be out of date. Retrying automatically.";
+        else if (priceRequest >= appliedPriceRequest) priceError = "Price update unavailable; retained quotes may be out of date. Retrying automatically.";
       }
     } finally {
       clearTimeout(deadline);
@@ -219,7 +225,7 @@
     // Registration returns the cached price without a second network round trip.
     // Subsequent heartbeats and prices keep independent, nonoverlapping loops.
     poll("presence", true).then(delay => {
-      if (!running || owner !== generation || workers.price.timer !== null) return;
+      if (!running || owner !== generation || workers.price.busy || workers.price.timer !== null) return;
       if (delay == null) poll("price");
       else workers.price.timer = setTimeout(() => poll("price"), delay);
     });
@@ -295,8 +301,8 @@
     if (!feedRunning || feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")) return;
     if (feedWindow.scrollHeight <= feedWindow.clientHeight) return;
     if (feedWindow.scrollTop + feedWindow.clientHeight >= feedWindow.scrollHeight - 1) {
-      if (!feedBottomSince) feedBottomSince = Date.now();
-      if (Date.now() - feedBottomSince > 3000) { feedWindow.scrollTop = 0; feedBottomSince = 0; }
+      if (!feedBottomSince) feedBottomSince = performance.now();
+      if (performance.now() - feedBottomSince > 3000) { feedWindow.scrollTop = 0; feedBottomSince = 0; }
     } else {
       feedBottomSince = 0;
       feedWindow.scrollTop += 1;
@@ -307,13 +313,13 @@
     clearTimeout(feedTimer);
     feedTimer = null;
     if (feedRunning && !document.hidden && !feedRequest) {
-      feedTimer = setTimeout(refreshFeed, Math.max(0, feedNextCheck - Date.now()));
+      feedTimer = setTimeout(refreshFeed, Math.max(0, feedNextCheck - performance.now()));
     }
   }
 
   async function refreshFeed() {
     if (!feedRunning || document.hidden || feedRequest) return;
-    if (Date.now() < feedNextCheck) { scheduleFeed(); return; }
+    if (performance.now() < feedNextCheck) { scheduleFeed(); return; }
     clearTimeout(feedTimer);
     feedTimer = null;
     const owner = feedGeneration;
@@ -386,7 +392,7 @@
       clearTimeout(request.deadline);
       feedRequest = null;
       // A cancelled visibility period must not replace the current retry time.
-      if (current()) feedNextCheck = Date.now() + retryDelay;
+      if (current()) feedNextCheck = performance.now() + retryDelay;
       scheduleFeed();
     }
   }

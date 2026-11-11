@@ -283,8 +283,12 @@ fn summarize_prices(sources: &[StoredQuote]) -> (Option<f64>, Option<f64>) {
         return (None, None);
     }
 
-    let total: f64 = sources.iter().map(|price| price.price_usd).sum();
-    let average = total / sources.len() as f64;
+    // Valid finite prices can overflow a sum before division. As in the
+    // response evaluator, keep the mean between the positive finite inputs.
+    let mut average = sources[0].price_usd;
+    for (index, source) in sources.iter().enumerate().skip(1) {
+        average += (source.price_usd - average) / (index + 1) as f64;
+    }
     let min = sources
         .iter()
         .map(|price| price.price_usd)
@@ -592,9 +596,13 @@ async fn run_blocking<T>(
 where
     T: Send + 'static,
 {
-    task::spawn_blocking(work)
-        .await
-        .map_err(|error| format!("blocking task failed: {error}"))?
+    let lease = crate::limits::request_lease();
+    task::spawn_blocking(move || {
+        let _lease = lease;
+        work()
+    })
+    .await
+    .map_err(|error| format!("blocking task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -621,6 +629,117 @@ mod tests {
             .map_or(0, |duration| duration.as_nanos());
 
         std::env::temp_dir().join(format!("bitcoin-price-tracker-{test_name}-{unique}.db"))
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_retains_capacity_until_its_blocking_storage_job_finishes() {
+        blocking_request_retains_capacity(false).await;
+    }
+
+    #[tokio::test]
+    async fn timed_out_request_retains_capacity_until_its_blocking_storage_job_finishes() {
+        blocking_request_retains_capacity(true).await;
+    }
+
+    async fn blocking_request_retains_capacity(expire: bool) {
+        use axum::{
+            Router,
+            body::Body,
+            http::{Request, StatusCode},
+            routing::get,
+        };
+        use std::sync::{Arc, Mutex, mpsc};
+        use tower::ServiceExt;
+
+        let mut app = crate::test_support::TestApp::new().await;
+        app.configure(crate::config::RuntimeConfig {
+            concurrency: 1,
+            ..Default::default()
+        });
+        let (release, held) = mpsc::channel::<()>();
+        let held = Arc::new(Mutex::new(Some(held)));
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let router = Router::new()
+            .route(
+                "/api/price",
+                get(move || {
+                    let held = held.lock().unwrap().take();
+                    let entered = entered.lock().unwrap().take();
+                    async move {
+                        if let Some(held) = held {
+                            super::run_blocking(move || {
+                                entered.unwrap().send(()).unwrap();
+                                let _ = held.recv();
+                                Ok(())
+                            })
+                            .await
+                            .unwrap();
+                        }
+                        "ready"
+                    }
+                }),
+            )
+            .route("/health", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                app.state.clone(),
+                crate::limits::limit_requests,
+            ));
+        let request = || {
+            Request::builder()
+                .uri("/api/price")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let caller = tokio::spawn(router.clone().oneshot(request()));
+        started.await.unwrap();
+        if expire {
+            tokio::time::pause();
+            // Advance past timer rounding too. An outstanding blocking job
+            // prevents the paused runtime from automatically advancing further.
+            tokio::time::advance(std::time::Duration::from_secs(21)).await;
+            tokio::time::resume();
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), caller)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap()
+                    .status(),
+                StatusCode::REQUEST_TIMEOUT
+            );
+        } else {
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+        }
+        let health = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(health).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let retry_status = router.clone().oneshot(request()).await.unwrap().status();
+        release.send(()).unwrap();
+        assert_eq!(
+            retry_status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cancelling the caller must not release the slot while storage still owns work"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                // Keep this assertion about concurrency independent of token refill.
+                app.clock
+                    .advance_monotonic(std::time::Duration::from_secs(1));
+                if router.clone().oneshot(request()).await.unwrap().status() == StatusCode::OK {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     fn snapshot_for_test(index: i64) -> SnapshotRecord {
@@ -1113,6 +1232,39 @@ mod tests {
                 super::load_price_state_sync_with_hook(&db_path, || {}).unwrap(),
                 before
             );
+        }
+        fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn refresh_persists_finite_summaries_for_extreme_valid_quotes() {
+        use crate::models::{LastAttempt, ProviderHealth};
+
+        let db_path = temp_db_path("extreme-summaries");
+        init_db_sync(&db_path).unwrap();
+        for price in [f64::MAX, f64::from_bits(1)] {
+            let quotes: Vec<_> = crate::pricing::UpstreamSource::ALL
+                .into_iter()
+                .map(|source| StoredQuote {
+                    source: source.name().into(),
+                    price_usd: price,
+                    last_success_at_unix: Some(10),
+                    quote_kind: QuoteKind::Unknown,
+                })
+                .collect();
+            let health = quotes
+                .iter()
+                .map(|quote| ProviderHealth {
+                    source: quote.source.clone(),
+                    last_attempt: LastAttempt::Success {
+                        attempted_at_unix: 10,
+                    },
+                })
+                .collect();
+            super::store_refresh_sync(&db_path, quotes, health, 10).unwrap();
+            let saved = load_latest_snapshot_sync(&db_path).unwrap().unwrap();
+            assert_eq!(saved.average_price, Some(price));
+            assert_eq!(saved.spread, Some(0.0));
         }
         fs::remove_file(db_path).unwrap();
     }

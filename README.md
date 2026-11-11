@@ -65,6 +65,8 @@ and respects reduced-motion preferences.
 
 See the [source and price API contract](docs/source-contract.md) for field
 semantics, freshness boundaries, migration, and background-refresh behavior.
+The [state-machine reference](docs/state-machines.md) documents states,
+invariants, transition tables, and confirmed retry/concurrency defects and fixes.
 
 ### News and asset caching
 
