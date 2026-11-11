@@ -11,12 +11,23 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+tokio::task_local! {
+    static REQUEST_LEASE: Arc<OwnedSemaphorePermit>;
+}
+
+// Blocking storage work can outlive its caller. Share the admitted request's
+// lease so cancellation cannot free capacity while that work is still queued.
+pub(crate) fn request_lease() -> Option<Arc<OwnedSemaphorePermit>> {
+    REQUEST_LEASE.try_with(Arc::clone).ok()
+}
 
 struct Bucket {
     tokens: f64,
     updated: Instant,
 }
+
 struct Gate {
     bucket: Mutex<Bucket>,
     rate: usize,
@@ -38,6 +49,9 @@ impl Gate {
             .bucket
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Timestamps are sampled before this mutex; concurrent callers may
+        // arrive out of order. Never refill the same elapsed interval twice.
+        let now = now.max(bucket.updated);
         bucket.tokens = (bucket.tokens
             + now.saturating_duration_since(bucket.updated).as_secs_f64() * self.rate as f64)
             .min(self.rate as f64);
@@ -92,7 +106,7 @@ pub(crate) async fn limit_requests(
         )
             .into_response();
     }
-    let Ok(_permit) = gate.slots.clone().try_acquire_owned() else {
+    let Ok(permit) = gate.slots.clone().try_acquire_owned() else {
         tracing::debug!("request concurrency limit reached");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -101,12 +115,36 @@ pub(crate) async fn limit_requests(
         )
             .into_response();
     };
-    match tokio::time::timeout(Duration::from_secs(20), next.run(request)).await {
+    match REQUEST_LEASE
+        .scope(
+            Arc::new(permit),
+            tokio::time::timeout(Duration::from_secs(20), next.run(request)),
+        )
+        .await
+    {
         Ok(response) => response,
         Err(_) => (
             StatusCode::REQUEST_TIMEOUT,
             Json(serde_json::json!({"error": "Request deadline exceeded."})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_admission_cannot_refill_an_already_accounted_interval() {
+        let now = Instant::now();
+        let gate = Gate::new(1, 1, now);
+        assert!(gate.allow(now));
+        let later = now + Duration::from_secs(1);
+        assert!(gate.allow(later));
+        // An older timestamp can reach the mutex after a newer caller.
+        assert!(!gate.allow(now));
+        assert!(!gate.allow(later), "the same second must not refill twice");
+        assert!(gate.allow(later + Duration::from_secs(1)));
     }
 }

@@ -329,6 +329,37 @@ test('rapid hide/show and pagehide/pageshow preserve single request ownership', 
   assert.equal(app.maxPresence(), 1);
 });
 
+test('a delayed startup price cannot overwrite a newer resumed price response', async t => {
+  let registrations = 0, priceStarted, startupStarted;
+  const firstPrice = new Promise(resolve => { priceStarted = resolve; });
+  const startup = new Promise(resolve => { startupStarted = resolve; });
+  const newer = report();
+  newer.sources.forEach(source => { source.price_usd = 200000; });
+  const app = await setup(t, {
+    presence: (route, body) => {
+      if (body.include_price && ++registrations === 2) { startupStarted(route); return; }
+      return json(route, { active_viewers: 1 });
+    },
+    price: (route, count) => {
+      if (count === 1) { priceStarted(route); return; }
+      return json(route, newer);
+    },
+  });
+  const cancelledPrice = await firstPrice;
+  await app.page.evaluate(() => { window.changeVisibility(true); window.changeVisibility(false); });
+  const heldStartup = await startup;
+  await tick(app.page, 100);
+  await text(app.page, 'avg', '200\u2009000.00');
+  const response = app.page.waitForResponse(res => res.url().endsWith('/api/presence') && res.request().postDataJSON()?.include_price);
+  await json(heldStartup, { active_viewers: 1, price: report() });
+  await response;
+  await tick(app.page, 100);
+  assert.match(await app.page.locator('#avg').textContent(), /200\u2009000\.00/);
+  assert.equal(app.maxPrices(), 1);
+  assert.equal(app.maxPresence(), 1);
+  await json(cancelledPrice, report()).catch(() => {});
+});
+
 test('denied storage and missing UUID still produce distinct identities in opener tabs', async t => {
   const app = await setup(t, { init: () => {
     Object.defineProperty(window, 'sessionStorage', { get() { throw new Error('Storage denied'); } });
@@ -687,6 +718,25 @@ test('RSS resumes the remaining retry delay when shown before it expires', async
   await text(page, 'feed-list', 'Current headline');
   assert.equal(requests, 2);
 });
+
+for (const clockShift of [-3600000, 3600000]) {
+  test(`RSS retry delay survives a ${clockShift < 0 ? 'backward' : 'forward'} wall-clock change`, async t => {
+    let requests = 0;
+    const { page } = await setup(t, { news: route => json(route, {
+      xml: newsFeed(++requests === 1 ? 'Cached headline' : 'Current headline'), refreshing: requests === 1,
+    }) });
+    await text(page, 'feed-status', 'Refreshing cached');
+    await page.evaluate(() => window.changeVisibility(true));
+    await tick(page, 1000);
+    await page.clock.setSystemTime(await page.evaluate(shift => Date.now() + shift, clockShift));
+    await page.evaluate(() => window.changeVisibility(false));
+    await tick(page, 500);
+    assert.equal(requests, 1, 'a wall-clock jump must not bypass the remaining retry delay');
+    await tick(page, 600);
+    await text(page, 'feed-list', 'Current headline');
+    assert.equal(requests, 2, 'a wall-clock jump must not postpone the monotonic deadline');
+  });
+}
 
 test('RSS scrolls automatically and pauses when requested', async t => {
   const xml = '<rss><channel>' + Array.from({ length: 10 }, (_, i) => `<item><title>Bitcoin headline ${i}</title><link>https://news.bitcoin.com/story-${i}/</link></item>`).join('') + '</channel></rss>';
