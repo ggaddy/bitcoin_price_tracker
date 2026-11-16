@@ -48,17 +48,20 @@ after(async () => {
 });
 
 async function setup(t, options = {}) {
+  const origin = options.origin ?? base;
   const context = await browser.newContext({ viewport: options.viewport ?? { width: 1200, height: 900 }, reducedMotion: options.reducedMotion ?? 'no-preference' });
   context.setDefaultTimeout(4000);
   const errors = [], presence = [], pending = new Set();
-  let prices = 0, maxPrices = 0, maxPresence = 0;
+  let prices = 0, maxPrices = 0, maxPresence = 0, maxNews = 0, maxInactive = 0;
   context.on('page', page => {
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', req => {
-      if (req.url().endsWith('/api/price') || (req.url().endsWith('/api/presence') && req.postDataJSON()?.active)) {
+      if (['/api/price', '/api/presence', '/api/news'].some(path => req.url().endsWith(path))) {
         pending.add(req);
         maxPrices = Math.max(maxPrices, [...pending].filter(req => req.url().endsWith('/api/price')).length);
-        maxPresence = Math.max(maxPresence, [...pending].filter(req => req.url().endsWith('/api/presence')).length);
+        maxPresence = Math.max(maxPresence, [...pending].filter(req => req.url().endsWith('/api/presence') && req.postDataJSON()?.active).length);
+        maxInactive = Math.max(maxInactive, [...pending].filter(req => req.url().endsWith('/api/presence') && !req.postDataJSON()?.active).length);
+        maxNews = Math.max(maxNews, [...pending].filter(req => req.url().endsWith('/api/news')).length);
       }
     });
     for (const event of ['requestfinished', 'requestfailed']) page.on(event, req => pending.delete(req));
@@ -76,7 +79,7 @@ async function setup(t, options = {}) {
   if (options.init) await context.addInitScript(options.init, options.initArg);
   await context.route('**/*', async route => {
     const url = route.request().url();
-    if (!url.startsWith(base + '/')) { errors.push(`Unexpected external request: ${url}`); return route.abort(); }
+    if (!url.startsWith(origin + '/')) { errors.push(`Unexpected external request: ${url}`); return route.abort(); }
     if (url.endsWith('/api/presence')) {
       const body = route.request().postDataJSON();
       presence.push(body);
@@ -99,8 +102,9 @@ async function setup(t, options = {}) {
       for (const tab of context.pages()) assert.deepEqual(await tab.evaluate(() => window.cspViolations ?? []), []);
     } finally { await context.close(); }
   });
-  await page.goto(base);
-  return { page, context, presence, prices: () => prices, maxPrices: () => maxPrices, maxPresence: () => maxPresence };
+  await page.goto(origin);
+  return { page, context, presence, prices: () => prices, maxPrices: () => maxPrices, maxPresence: () => maxPresence,
+    maxNews: () => maxNews, maxInactive: () => maxInactive };
 }
 async function text(page, id, expected) {
   try {
@@ -110,6 +114,101 @@ async function text(page, id, expected) {
   }
 }
 async function tick(page, ms) { await page.clock.runFor(ms); }
+
+// Real HTTP headers with an unfinished body exercise transport ownership;
+// route.fulfill() would finish the body and hide the leak under test.
+async function streamingFixture(t, path, status) {
+  const files = new Map(await Promise.all([
+    ['/', '../../src/ui.html', 'text/html'],
+    ['/assets/dashboard.js', '../../src/dashboard.js', 'text/javascript'],
+    ['/assets/dashboard.css', '../../src/dashboard.css', 'text/css'],
+    ['/assets/cybercore-0.3.0.min.css', '../../src/vendor/cybercore-0.3.0.min.css', 'text/css'],
+  ].map(async ([path, file, type]) => [path, { body: await readFile(new URL(file, import.meta.url)), type }])));
+  const ui = await readFile(new URL('../../src/ui.rs', import.meta.url), 'utf8');
+  const policy = ui.match(/"(default-src [^"]+)"/)[1];
+  let active = 0, close;
+  const closed = new Promise(resolve => { close = resolve; });
+  const fixture = createServer((req, res) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname === path) {
+      active++;
+      res.on('close', () => { active--; close(); });
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Retry-After': '1' });
+      res.write('{"held":');
+      return;
+    }
+    const file = files.get(pathname);
+    res.writeHead(file ? 200 : 404, { 'Content-Type': file?.type ?? 'text/plain', 'Content-Security-Policy': policy });
+    res.end(file?.body ?? 'Not found');
+  });
+  await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    fixture.closeAllConnections();
+    await new Promise(resolve => fixture.close(resolve));
+  });
+  return { origin: `http://127.0.0.1:${fixture.address().port}`, closed, active: () => active };
+}
+
+for (const kind of ['price', 'presence', 'news']) {
+  test(`rejected ${kind} response cancels its stalled body before retry`, { timeout: 10000 }, async t => {
+    const fixture = await streamingFixture(t, `/api/${kind}`, kind === 'price' ? 500 : 503);
+    let attempts = 0;
+    const options = { origin: fixture.origin };
+    if (kind === 'price') options.price = route => ++attempts === 1 ? route.continue() : json(route, report());
+    if (kind === 'presence') options.presence = (route, body) => body.active && ++attempts === 1 ? route.continue() : json(route, {});
+    if (kind === 'news') options.news = route => ++attempts === 1 ? route.continue() : json(route, { xml: newsFeed('Recovered headline'), stale: false });
+    const app = await setup(t, options);
+    await text(app.page, kind === 'news' ? 'feed-status' : 'status', kind === 'news' ? 'retrying shortly' : kind === 'price' ? 'OFFLINE' : 'DEGRADED');
+    await tick(app.page, kind === 'news' ? 1100 : 5100);
+    await text(app.page, kind === 'news' ? 'feed-list' : 'status', kind === 'news' ? 'Recovered headline' : 'LIVE');
+    const maximum = kind === 'price' ? app.maxPrices() : kind === 'presence' ? app.maxPresence() : app.maxNews();
+    assert.equal(maximum, 1, 'retry must not overlap an abandoned response body');
+    await fixture.closed;
+    assert.equal(fixture.active(), 0, 'native server transfer was cancelled');
+  });
+}
+
+test('inactive presence cancels an unread successful response body', { timeout: 10000 }, async t => {
+  const fixture = await streamingFixture(t, '/api/presence', 200);
+  const app = await setup(t, { origin: fixture.origin,
+    init: () => { navigator.sendBeacon = () => false; },
+    presence: (route, body) => body.active ? json(route, {}) : route.continue(),
+  });
+  await text(app.page, 'status', 'LIVE');
+  const response = app.page.waitForResponse(res => res.url().endsWith('/api/presence') && !res.request().postDataJSON()?.active);
+  await app.page.evaluate(() => window.changeVisibility(true));
+  await response;
+  await tick(app.page, 3100);
+  assert.equal(fixture.active(), 0, 'completion must close the unread keepalive body');
+});
+
+for (const beacon of ['rejected', 'missing', 'throwing']) {
+  test(`inactive presence stays single flight with ${beacon} beacon and recovers after timeout`, { timeout: 10000 }, async t => {
+    const held = [];
+    const app = await setup(t, {
+      init: mode => {
+        navigator.sendBeacon = mode === 'missing' ? undefined : () => {
+          if (mode === 'throwing') throw new Error('Beacon refused');
+          return false;
+        };
+      }, initArg: beacon,
+      presence: (route, body) => body.active ? json(route, {}) : held.push(route),
+    });
+    await text(app.page, 'status', 'LIVE');
+    await app.page.evaluate(() => {
+      for (let i = 0; i < 16; i++) { window.changeVisibility(true); window.changeVisibility(false); }
+      window.changeVisibility(true);
+    });
+    await tick(app.page, 100);
+    assert.equal(app.maxInactive(), 1, 'all stops must share one unsettled inactive fallback');
+    assert.equal(held.length, 1);
+    await tick(app.page, 3100);
+    await app.page.evaluate(() => { window.changeVisibility(false); window.changeVisibility(true); });
+    await tick(app.page, 100);
+    assert.equal(held.length, 2, 'timeout releases ownership for a later stop');
+    for (const route of held) await json(route, {}).catch(() => {});
+  });
+}
 
 test('registration renders its cached price without an initial price GET and keeps later heartbeats small', async t => {
   const app = await setup(t, { presence: (route, body) => json(route, {
@@ -212,6 +311,52 @@ test('freshness expires between responses without upgrading unknown or future qu
   await text(page, 'avg', 'Unavailable');
   assert.deepEqual(await page.locator('#sources .source-detail').allTextContents(), ['90s', '90s', 'Age unknown', 'Age unknown']);
 });
+
+for (const kind of ['startup', 'price', 'retry']) {
+  test(`${kind} response transit cannot make expired quotes fresh on arrival`, async t => {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const data = report({ warnings: ['Delayed evaluated report'] });
+    data.sources.forEach(source => { source.age_seconds = 89; source.last_success_at_unix = now - 89; });
+    const initial = report();
+    initial.sources.forEach(source => { source.age_seconds = 84; source.last_success_at_unix = now - 84; });
+    if (kind === 'retry') {
+      data.evaluated_at_unix = now + 5;
+      data.sources.forEach(source => { source.last_success_at_unix = now - 84; });
+    }
+    const app = await setup(t, {
+      presence: (route, body) => {
+        if (kind === 'startup' && body.include_price) { entered(route); return; }
+        return json(route, { active_viewers: 1 });
+      },
+      price: (route, count) => {
+        if ((kind === 'price' && count === 1) || (kind === 'retry' && count === 2)) { entered(route); return; }
+        return json(route, kind === 'retry' && count === 1 ? initial : report());
+      },
+    });
+    if (kind === 'retry') {
+      await text(app.page, 'status', 'LIVE');
+      await tick(app.page, 5100);
+    }
+    const held = await started;
+    // Stay within both real request deadlines; the report was evaluated before
+    // this transfer delay. No mocked fetch or suppressed abort is needed.
+    await tick(app.page, 2100);
+    if (kind === 'retry') await text(app.page, 'status', 'STALE');
+    await json(held, kind === 'startup' ? { active_viewers: 1, price: data } : data);
+    // Especially on retry, prove this response was accepted before inspecting
+    // freshness; the retained report may already be stale while it is held.
+    await text(app.page, 'warnings', 'Delayed evaluated report');
+    await text(app.page, 'sources', 'Coinbase');
+    assert.equal(await app.page.locator('#status').textContent(), 'STALE');
+    assert.equal(await app.page.locator('#avg').textContent(), 'Unavailable');
+    await text(app.page, 'coverage', '0 of 4');
+    await tick(app.page, 5100);
+    await text(app.page, 'status', 'LIVE');
+    assert.equal(app.maxPrices(), 1);
+    assert.equal(app.maxPresence(), 1);
+  });
+}
 
 test('LIVE expires locally as coverage drops', async t => {
   const data = report(); data.sources[0].age_seconds = 89;
@@ -750,6 +895,42 @@ test('RSS scrolls automatically and pauses when requested', async t => {
   await tick(page, 1000);
   assert.equal(await page.locator('#feed-window').evaluate(el => el.scrollTop), pausedTop);
 });
+
+for (const interruption of ['pause', 'hidden', 'hover', 'focus', 'manual', 'reduced-motion']) {
+  test(`RSS bottom dwell restarts after ${interruption}`, async t => {
+    const xml = '<rss><channel>' + Array.from({ length: 10 }, (_, i) => `<item><title>Bitcoin headline ${i}</title><link>https://news.bitcoin.com/story-${i}/</link></item>`).join('') + '</channel></rss>';
+    const { page } = await setup(t, { news: route => json(route, { xml, stale: false }) });
+    await text(page, 'feed-list', 'Bitcoin headline 9');
+    const feed = page.locator('#feed-window');
+    await feed.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await tick(page, 100);
+    const bottom = await feed.evaluate(el => el.scrollTop);
+    assert.ok(bottom > 0);
+    if (interruption === 'hidden') await page.evaluate(() => window.changeVisibility(true));
+    else if (interruption === 'hover') await feed.dispatchEvent('mouseenter');
+    else if (interruption === 'focus') await feed.focus();
+    else if (interruption === 'manual') await feed.dispatchEvent('wheel');
+    else if (interruption === 'reduced-motion') {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await text(page, 'feed-toggle', 'Resume scrolling');
+    } else await page.locator('#feed-toggle').click();
+    await tick(page, 4000);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom);
+    if (interruption === 'hidden') await page.evaluate(() => window.changeVisibility(false));
+    else if (interruption === 'hover') await feed.dispatchEvent('mouseleave');
+    else if (interruption === 'focus') await feed.evaluate(el => el.blur());
+    else if (interruption === 'reduced-motion') {
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+      await text(page, 'feed-toggle', 'Pause scrolling');
+    } else await page.locator('#feed-toggle').click();
+    await tick(page, 100);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'resuming starts a new bottom dwell');
+    await tick(page, 2900);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'retain a full three-second dwell');
+    await tick(page, 200);
+    assert.ok(await feed.evaluate(el => el.scrollTop) < bottom, 'wrap after the new dwell');
+  });
+}
 
 test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
   const html = await readFile(new URL('../../src/ui.html', import.meta.url));

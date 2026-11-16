@@ -9,8 +9,9 @@
     price: { busy: false, timer: null, controller: null, timeout: 8000 },
   };
   let sessionId, running = false, generation = 0, ageTimer = null;
-  let lastData = null, receivedAt = 0, priceError = "", presenceError = "";
+  let lastData = null, receivedAt = 0, ageStartedAt = 0, priceError = "", presenceError = "";
   let nextPriceRequest = 0, appliedPriceRequest = 0;
+  let inactiveController = null;
 
   function status(label) {
     // Only changes are announced by role=status, never routine heartbeats.
@@ -72,12 +73,15 @@
       el.note.textContent = warnings.length ? "Connection interrupted. Retrying automatically." : "Connecting to the price feed.";
     } else {
       const data = lastData;
-      // Advance server-provided ages with elapsed monotonic time. Unknown/future
-      // observations never become fresh locally; only a new response can do that.
-      const elapsed = Math.max(0, Math.floor((performance.now() - receivedAt) / 1000));
+      // Server evaluation precedes receipt. Count the whole request duration
+      // conservatively, without comparing the browser and server wall clocks.
+      // Unknown/future observations never become fresh solely from elapsed time.
+      const now = performance.now();
+      const elapsed = Math.max(0, Math.floor((now - receivedAt) / 1000));
+      const ageElapsed = Math.max(0, Math.floor((now - ageStartedAt) / 1000));
       const sources = data.sources.map(source => ({ ...source,
-        age: source.age_seconds === null ? null : source.age_seconds + elapsed,
-        currentFreshness: source.freshness === "fresh" && source.age_seconds + elapsed >= data.source_max_age_seconds
+        age: source.age_seconds === null ? null : source.age_seconds + ageElapsed,
+        currentFreshness: source.freshness === "fresh" && source.age_seconds + ageElapsed >= data.source_max_age_seconds
           ? "stale" : source.freshness,
       }));
       const contributors = data.coverage.contributing_sources.map(name => sources
@@ -102,7 +106,7 @@
         ? `Connection interrupted. Retaining last received quotes; report received ${elapsed}s ago. Retrying automatically.`
         : presenceError ? "Viewer heartbeat failed. Displaying available quotes while retrying."
         : !count ? "No fresh quotes qualify for the average. Retained quotes are shown with their ages."
-        : `Showing ${count} contributing sources. Ages advance between server updates.`;
+        : `Showing ${count} contributing sources. Ages include request time and advance between updates.`;
       el.sources.replaceChildren();
       const names = [...new Set([...sources.map(source => source.source), ...data.provider_health.map(health => health.source)])];
       for (const name of names) {
@@ -127,7 +131,7 @@
     el.warnings.replaceChildren(...(warnings.length ? warnings : ["None"]).map(text => node("li", "", text)));
   }
 
-  function receivePrice(data, request) {
+  function receivePrice(data, request, requestedAt) {
     // Startup presence and the independent GET worker can overlap on resume.
     // An earlier request must not replace a later request's accepted report.
     if (request < appliedPriceRequest) return;
@@ -139,6 +143,7 @@
     } else {
       lastData = data;
       receivedAt = performance.now();
+      ageStartedAt = requestedAt;
       priceError = "";
     }
   }
@@ -150,6 +155,7 @@
     worker.timer = null;
     worker.busy = true;
     const owner = generation;
+    const requestedAt = performance.now();
     const priceRequest = kind === "price" || includePrice ? ++nextPriceRequest : null;
     const controller = new AbortController();
     worker.controller = controller;
@@ -170,7 +176,7 @@
             const data = JSON.parse(body);
             if (data.price) {
               try {
-                receivePrice(data.price, priceRequest);
+                receivePrice(data.price, priceRequest, requestedAt);
                 startupPriceDelay = data.price.refreshing === true ? 1000 : 5000;
               } catch {
                 if (priceRequest >= appliedPriceRequest) priceError = "Startup price unavailable. Retrying automatically.";
@@ -183,7 +189,7 @@
         const data = validate(await response.json());
         if (response.status === 503 && data.status !== "UNAVAILABLE") throw new Error("Invalid unavailable response");
         if (running && owner === generation) {
-          receivePrice(data, priceRequest);
+          receivePrice(data, priceRequest, requestedAt);
         }
       }
     } catch {
@@ -192,6 +198,9 @@
         else if (priceRequest >= appliedPriceRequest) priceError = "Price update unavailable; retained quotes may be out of date. Retrying automatically.";
       }
     } finally {
+      // Header-only rejection still owns a live response body. Cancel it before
+      // releasing this worker, including when no body was needed or consumed.
+      controller.abort();
       clearTimeout(deadline);
       worker.controller = null;
       worker.busy = false;
@@ -204,15 +213,21 @@
   }
 
   function inactivePresence() {
-    if (!sessionId) return;
+    if (!sessionId || inactiveController) return;
     const payload = JSON.stringify({ session_id: sessionId, active: false });
     try {
       if (typeof navigator.sendBeacon === "function" && navigator.sendBeacon("/api/presence", new Blob([payload], { type: "application/json" }))) return;
     } catch { /* A rejected beacon uses a bounded keepalive request. */ }
     const controller = new AbortController();
+    inactiveController = controller;
     const deadline = setTimeout(() => controller.abort(), 3000);
     fetch("/api/presence", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, keepalive: true, signal: controller.signal })
-      .catch(() => {}).finally(() => clearTimeout(deadline));
+      .catch(() => {}).finally(() => {
+        // Delivery needs only headers, so do not leave an unread body running.
+        controller.abort();
+        clearTimeout(deadline);
+        inactiveController = null;
+      });
   }
 
   function start() {
@@ -283,28 +298,32 @@
   let feedRequest = null;
   let feedNextCheck = 0;
   let feedTimer = null;
-  let feedBottomSince = 0;
+  let feedBottomSince = null;
   function updateFeedToggle() {
     feedToggle.textContent = feedPaused ? "Resume scrolling" : "Pause scrolling";
     feedToggle.setAttribute("aria-pressed", String(feedPaused));
   }
   updateFeedToggle();
-  feedToggle.addEventListener("click", () => { feedPaused = !feedPaused; updateFeedToggle(); });
-  reducedMotion.addEventListener("change", () => { feedPaused = reducedMotion.matches; updateFeedToggle(); });
-  feedWindow.addEventListener("mouseenter", () => { feedHovered = true; });
+  feedToggle.addEventListener("click", () => { feedPaused = !feedPaused; feedBottomSince = null; updateFeedToggle(); });
+  reducedMotion.addEventListener("change", () => { feedPaused = reducedMotion.matches; feedBottomSince = null; updateFeedToggle(); });
+  feedWindow.addEventListener("mouseenter", () => { feedHovered = true; feedBottomSince = null; });
   feedWindow.addEventListener("mouseleave", () => { feedHovered = false; });
+  feedWindow.addEventListener("focusin", () => { feedBottomSince = null; });
   // Manual scrolling pauses motion until explicitly resumed.
   for (const event of ["wheel", "touchstart", "pointerdown", "keydown"]) {
-    feedWindow.addEventListener(event, () => { feedPaused = true; updateFeedToggle(); }, { passive: true });
+    feedWindow.addEventListener(event, () => { feedPaused = true; feedBottomSince = null; updateFeedToggle(); }, { passive: true });
   }
   setInterval(() => {
-    if (!feedRunning || feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")) return;
-    if (feedWindow.scrollHeight <= feedWindow.clientHeight) return;
+    if (!feedRunning || feedPaused || feedHovered || document.hidden || feedWindow.matches(":focus-within")
+        || feedWindow.scrollHeight <= feedWindow.clientHeight) {
+      feedBottomSince = null;
+      return;
+    }
     if (feedWindow.scrollTop + feedWindow.clientHeight >= feedWindow.scrollHeight - 1) {
-      if (!feedBottomSince) feedBottomSince = performance.now();
-      if (performance.now() - feedBottomSince > 3000) { feedWindow.scrollTop = 0; feedBottomSince = 0; }
+      if (feedBottomSince === null) feedBottomSince = performance.now();
+      if (performance.now() - feedBottomSince > 3000) { feedWindow.scrollTop = 0; feedBottomSince = null; }
     } else {
-      feedBottomSince = 0;
+      feedBottomSince = null;
       feedWindow.scrollTop += 1;
     }
   }, 50);
@@ -375,6 +394,7 @@
         if (!seen.size) throw new Error("No headlines");
         feedList.replaceChildren(entries);
         feedWindow.scrollTop = 0;
+        feedBottomSince = null;
         lastFeedXml = data.xml;
       }
       feedStatus.textContent = data.refreshing
@@ -389,6 +409,7 @@
         ? `Bitcoin.com · Showing previous headlines — ${retry}`
         : `Bitcoin news temporarily unavailable — ${retry}`;
     } finally {
+      request.controller?.abort();
       clearTimeout(request.deadline);
       feedRequest = null;
       // A cancelled visibility period must not replace the current retry time.
@@ -407,6 +428,7 @@
   function stopFeed() {
     if (!feedRunning) return;
     feedRunning = false;
+    feedBottomSince = null;
     feedGeneration++;
     clearTimeout(feedTimer);
     feedTimer = null;

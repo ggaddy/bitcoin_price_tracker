@@ -1,11 +1,15 @@
 # Application state machines
 
-Reviewed 2026-11-11, starting at `b4be784` (`origin/master`), with the corrections
-described below. This is the single reference for the application's explicit
-enums and implicit state carried by locks, timestamps, timers, transactions and
-browser flags. Beads task `bitcoin_price_tracker-jrk` owns the audit; Beads, not
-this document, owns ongoing work tracking. Wire-field definitions remain in
-[the source contract](source-contract.md).
+Initial review: 2026-11-11 at `b4be784`, merged in PR #52 (`c4adeb4`).
+Follow-up review: 2026-11-15 at `c4adeb4` (`origin/master`), with the additional
+corrections described below. Additional inventory review: 2026-11-15 at
+`6525619`, separating seven previously implicit submachines (16–22) and fixing
+F8–F9 as described below. This is the single reference for the
+application's explicit enums and implicit state carried by locks, timestamps,
+timers, transactions and browser flags. Beads tasks `bitcoin_price_tracker-jrk`,
+`bitcoin_price_tracker-940`, and `bitcoin_price_tracker-3fx` record the reviews;
+Beads owns ongoing work tracking.
+Wire-field definitions remain in [the source contract](source-contract.md).
 
 States below are predicates over existing fields, not proposed new enums.
 Independent machines compose: a fresh quote can coexist with failed provider
@@ -28,7 +32,10 @@ fails a guard leaves the machine unchanged.
 | News cache | Short-held `FeedCache` mutex and `refreshing` reservation | Process-local; monotonic completion time and a 12s task deadline |
 | Price browser workers | `busy`, controller, timer, visibility generation | One unsettled request per kind; 3s presence / 8s price deadlines |
 | Browser report publication | Request sequence shared by startup presence and price GET | Earlier-issued responses cannot replace a later-issued accepted report |
-| Browser age / news retry / scroll dwell | `performance.now()` and bounded timers | Monotonic elapsed time; wall clock is used for displaying dates only |
+| Browser response transport | Each request's controller, through body consumption or terminal cancellation | Headers alone do not end body transfer; all terminal paths abort remaining transport |
+| Inactive presence fallback | One `inactiveController` per document | Three-second deadline; retained across visibility generations until settlement |
+| Browser quote age | Report's request-start anchor in `performance.now()` | Conservatively includes transit and body-consumption time; receipt time separately anchors connection messages |
+| Browser news retry / scroll dwell | `performance.now()` and bounded timers | Retry time survives hidden periods; bottom dwell resets whenever motion is interrupted |
 
 Only one application instance may own a database. These locks, rate budgets,
 viewer IDs and cooldowns are not coordination between processes. Restart resets
@@ -120,6 +127,8 @@ independent. Spawned price work intentionally does not inherit the task-local
 HTTP lease: it has its own single-refresh owner, so it does not block cached
 requests. New detached request work must explicitly preserve its owner; Tokio
 task locals do not automatically propagate into spawned tasks.
+Handler completion and socket delivery are distinct: the route slot need not
+cover response flushing, which remains bounded by the connection owner (17).
 
 Confirmed violations and corrections: **F1**, **F2** below. Existing checks also
 cover independent health/presence/news capacity and release after a normal
@@ -353,20 +362,21 @@ has `Idle`, `InFlight(owner_generation)`, `Waiting(timer)`.
 | Initializing | Secure random per-document ID available | Hidden/Stopped or start visible generation; no browser storage needed |
 | Stopped | Visible start/pageshow and ID available | Running; increment generation; request startup presence+cached price; start 1s age rendering |
 | Running | Repeated start | No-op |
-| Idle / Waiting worker | Poll, running and not busy | InFlight; own controller and body-inclusive deadline |
+| Idle / Waiting worker | Poll, running and not busy | InFlight; capture monotonic request start, own controller and body-inclusive deadline |
 | InFlight | Another poll for same kind | No-op; never overlap same-kind requests |
 | InFlight presence | Admitted startup object valid | Accept price subject to report sequence; first GET after 1s if refreshing, otherwise 5s |
 | InFlight presence | Startup object absent/invalid or heartbeat failed | Bounded GET fallback; continue independent heartbeat loop |
-| InFlight | Success/failure/abort settles | Release busy/controller, render only if running; schedule own next poll after 5s (0 if settling an old generation after restart) |
+| InFlight | Success/failure/abort settles | Cancel remaining transport, clear deadline, release busy/controller, render only if running; schedule own next poll after 5s (0 if settling an old generation after restart) |
 | Running | Hide/pagehide | Stopped; increment generation, clear age/poll timers, abort workers, best-effort inactive beacon or bounded 3s keepalive fallback; show IDLE |
 | Old InFlight | Completes after stop/restart | Cannot publish into another generation; retain ownership until settlement, then resume at most one loop |
 
-Invariants: no price/active-heartbeat polling while stopped; inactive beacons
-are best effort and not part of the active-worker single-flight count. Abort
+Invariants: no price/active-heartbeat polling while stopped; inactive delivery
+has separate ownership and best-effort semantics (19). Abort
 requests cancellation but ownership is released on settlement, not on the
 abort call. Presence failure cannot block continued price polling. Requests
 from different kinds may overlap on resume; price publication must also be
 ordered across kinds (**F3**), not only protected by visibility generation.
+Worker completion also has to cancel any unread body (**F8**, machine 18).
 
 Evidence: registration/legacy fallback, presence/price timeout, held startup
 body, rapid visibility/page lifecycle, unsupported capabilities, denied storage,
@@ -375,32 +385,41 @@ distinct opener-tab IDs, and new cross-worker response-order regressions in
 
 ## 11. Dashboard report and displayed freshness
 
-State: optional last valid report, monotonic receipt time, latest accepted
-price-request number, and independent price/presence errors. Display labels
-include `Connecting`, `LIVE`, `DEGRADED`, `STALE`, `UNAVAILABLE`, `OFFLINE`,
+State: optional last valid report, monotonic receipt and request-start times,
+latest accepted price-request number, and independent price/presence errors.
+Display labels include `Connecting`, `LIVE`, `DEGRADED`, `STALE`, `UNAVAILABLE`, `OFFLINE`,
 `IDLE` and `UNSUPPORTED`.
 
 | From | Event / guard | To / effects |
 | --- | --- | --- |
-| No report | Valid current-generation price response | Save report and receipt time; evaluate display |
+| No report | Valid current-generation price response | Save report, receipt time and its request-start age anchor; evaluate display |
 | Any | Earlier-issued response than latest accepted report | Ignore, including its price error; do not reset ages or roll back quote/health state |
-| Cached report with quotes | New UNAVAILABLE response or transport/body/contract failure | Retain report and age anchor; show OFFLINE / warning |
-| Any | New accepted report with usable rows | Replace report, reset age anchor, clear price error |
-| Cached report | 1s render tick | Add elapsed monotonic seconds to reported ages; drop expired contributors and recompute finite average/spread |
+| Cached report with quotes | New UNAVAILABLE response or transport/body/contract failure | Retain report and both time anchors; show OFFLINE / warning |
+| Any | New accepted report with usable rows | Replace report; use that request's start for age, record receipt for messages, clear price error |
+| Arriving / cached report | Initial render or 1s tick | Add whole monotonic seconds since request start to reported ages; immediately drop expired contributors and recompute finite average/spread |
 | LIVE | Some contribution expires / heartbeat error | DEGRADED; no local upgrade to LIVE |
 | Report with retained rows | Last contribution expires | STALE (or OFFLINE if price transport failed) |
 | Any running display | Price error / heartbeat recovery | OFFLINE / clear heartbeat warning; status still respects report and age |
 | Any | Stop / unsupported | IDLE / UNSUPPORTED overrides running display |
 
 Invariants: unknown/future/stale observations never become fresh solely from
-local elapsed time. Unavailable/error responses cannot erase good quote cards.
+local elapsed time. Response transit cannot renew an expired contributor (**F6**).
+The browser cannot measure the server's evaluation instant without clock
+synchronization, so it conservatively includes the entire request duration.
+This may expire a quote early by up to that duration; it does not add a fresh
+window after arrival. Both startup presence prices and ordinary/retry GETs use
+this rule. Connection messages still measure time since receipt. Unavailable/error
+responses cannot erase good quote cards or reset either anchor.
 Report acceptance is ordered by request issuance, not Unix timestamps (which
 can move backward); it is not a server-side snapshot revision protocol. Source
 names, warnings and provider messages render as text. Displayed observation
 date comes from the latest nonfuture source observation, not snapshot save time.
 
 Evidence: browser expiry, retained network/500/503/malformed responses,
-recovery, safe-text/CSP checks, extreme values, and **F3** regression.
+recovery, safe-text/CSP checks, extreme values, **F3**, and **F6** regressions.
+The three `response transit cannot make expired quotes fresh on arrival` cases
+hold real startup/price/retry responses for 2.1s, below their deadlines, then
+verify immediate expiry and eventual recovery with one request per worker.
 
 ## 12. Server news cache
 
@@ -442,7 +461,7 @@ States: `Stopped`, `Waiting(next_check)`, `InFlight(owner_generation)`,
 | Parsing | New accepted XML | Replace up to 30 deduplicated HTTP(S) links as text; retain previous headlines on failure |
 | InFlight / Parsing | Success with `refreshing` | Schedule next check after 2s |
 | InFlight / Parsing | Positive numeric Retry-After on 429/503/OK | Retry in clamped 1–30s unless refreshing overrides to 2s |
-| InFlight / Parsing | Ordinary success or failure without short hint | Retry after 300s; failure preserves prior headlines |
+| InFlight / Parsing | Ordinary success or failure without short hint | Cancel remaining transport; retry after 300s; failure preserves prior headlines |
 | Any running state | Hide/pagehide | Stopped; clear timer/deadline, abort, retain request ownership until settlement |
 | Old request | Settles after stop/restart | Cannot publish or replace retry deadline; schedule current generation against remaining monotonic delay |
 
@@ -450,6 +469,9 @@ Invariants: one unsettled feed request across visibility generations; hidden
 time counts toward the remaining retry delay. Only the current owner may
 publish or update `next_check`. Wall-clock jumps cannot extend or bypass the
 wait (**F4**). An RSS error cannot stop the independent price/presence workers.
+Header-only rejection still owns a body and must cancel it before releasing
+the request controller (**F8**). Content acceptance and DOM publication have
+their own state and rollback boundary (22).
 
 Evidence: held headers/bodies, late success/failure, rapid hide/show,
 initially-hidden, body deadline, cold-cache short retry, retained headlines,
@@ -458,22 +480,28 @@ remaining-delay, missing capability and new forward/backward-clock tests.
 ## 14. Feed motion
 
 Motion states compose `running`, user/reduced-motion pause, hover/focus/manual
-interaction and `scrollable|at_bottom`.
+interaction and `scrollable|at_bottom`. Bottom dwell is independently `Unset` or
+`Dwelling(start_monotonic)`; only uninterrupted eligible motion retains it.
 
 | From | Event / guard | To / effects |
 | --- | --- | --- |
 | Initializing | Read reduced-motion preference | Paused if requested, otherwise unpaused |
-| Paused / Unpaused | Toggle button | Flip pause; update label and aria-pressed |
-| Either | Wheel/touch/pointer/key interaction | Paused until explicit resume or preference change |
-| Either | Reduced-motion preference changes | Set pause to new preference |
-| Running motion | Hidden, hovered, focused, paused or not scrollable | No movement on 50ms tick |
-| Running motion | Visible, unpaused, unhovered, unfocused and scrollable | Move one pixel per tick; reset bottom dwell when not at bottom |
-| At bottom | Eligible ticks, dwell greater than 3 monotonic seconds | Wrap to top and reset dwell |
-| Any | Accept replacement feed | Reset scroll position to top |
+| Paused / Unpaused | Toggle button | Flip pause; clear dwell, update label and aria-pressed |
+| Either | Wheel/touch/pointer/key interaction | Paused until explicit resume or preference change; clear dwell |
+| Either | Reduced-motion preference changes | Set pause to new preference; clear dwell |
+| Any motion | Hide/pagehide, hover or focus enters feed | Clear dwell immediately |
+| Running motion | Hidden, hovered, focused, paused or not scrollable | No movement on 50ms tick; dwell stays Unset |
+| Running motion | Visible, unpaused, unhovered, unfocused, scrollable and not at bottom | Move one pixel per tick; clear dwell |
+| At bottom, Unset | Eligible tick | Dwelling(now), no movement |
+| At bottom, Dwelling | Eligible ticks, uninterrupted dwell greater than 3 monotonic seconds | Wrap to top and clear dwell |
+| Any | Accept replacement feed | Reset scroll position to top and clear dwell |
 
 Pause affects movement, not feed acquisition. CSS also pauses page effects
-when hidden or reduced motion is requested. Browser tests cover scrolling,
-pause, reduced motion and hidden-page effects.
+when hidden or reduced motion is requested. Interrupted time cannot count toward
+a subsequent bottom dwell (**F7**); the first eligible tick after resuming starts
+a new three-second dwell. Browser regressions cover pause/resume, hide/show,
+hover, focus, manual scrolling and reduced-motion changes, including no movement
+during interruption and wrapping only after the new dwell.
 
 ## 15. Embedded asset revalidation
 
@@ -494,44 +522,296 @@ describe content, not mutable server freshness. Browser tests cover motion,
 pause, reduced motion and legacy deployment caches; Rust tests cover GET/HEAD,
 304, differing content, CSP and cache headers.
 
+## 16. Inbound body extraction and presence command admission
+
+Implementation: `handlers::router`, Axum's `Json<PresencePayload>` extractor,
+`limits::limit_requests`, `presence::update_presence`.
+
+States: `Routed`, `Admitted`, `BufferingBody`, `Decoded`, `Validated`,
+`Applied`, `Rejected`, `Cancelled`. Parsing is separate from viewer membership.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Routed | Rate/concurrency refusal | Rejected 429/503 before the handler can mutate presence |
+| Routed | Route slot acquired | Admitted; start the same 20s handler deadline used for extraction |
+| Admitted | Wrong method or unsuitable/malformed JSON request | Rejected by routing/extraction; no presence command applied |
+| Admitted | JSON body arrives in chunks | BufferingBody, at most 1024 bytes; retain the route slot while waiting |
+| BufferingBody | Declared/actual body exceeds limit | Rejected 413; no viewer or activation change |
+| BufferingBody | EOF, complete JSON and typed fields decode | Decoded; only then enter `update_presence` |
+| Decoded | Invalid session / new viewer at capacity | Rejected 400/429; existing admission rules from 4 apply |
+| Decoded | Session and capacity checks pass | Validated → Applied under viewer mutex; optional cached price follows after unlock |
+| BufferingBody | Deadline, disconnect or cancellation | Cancelled; drop extraction/body, never apply a late suffix |
+| Cancelled | New complete request | Independent admission and extraction; previous request does not reserve the session ID |
+
+Invariants: receiving a prefix containing a session ID cannot admit a viewer,
+increment generation or trigger providers. Validation happens before mutation;
+optional price I/O happens after admission. Consuming a rate token does not
+imply that a presence command was applied. A transport failure after application
+may prevent acknowledgement without undoing membership; a heartbeat retry for
+the same ID renews membership using machine 4's arrival-order semantics.
+
+Evidence: `incomplete_presence_body_cannot_mutate_admission_and_timeout_allows_retry`
+holds a partial JSON body, verifies 503 for a concurrent same-pool request and
+independent healthy `/health`, advances the deadline, observes 408 and a closed
+body channel, then successfully retries with exactly one activation and no
+provider requests. Existing oversized-body and invalid-session tests cover
+the other rejection boundaries. No new server defect was confirmed here.
+
+## 17. HTTP response construction and socket delivery
+
+Implementation: `handlers.rs`, `ui::security_headers`, `limits.rs`,
+`lifecycle::serve_until`.
+
+States: `Handling`, `ResponseReady`, `Decorated`, `Sending`, `Delivered`,
+`Disconnected`; handler, blocking-job and connection ownership are independent.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Handling | Handler returns, or middleware creates a rejection/deadline response | ResponseReady; body/status constructed; handler lease may end while storage clones retain it |
+| ResponseReady | Outer security middleware runs | Decorated with security and route-appropriate cache headers, including errors |
+| Decorated | GET/POST response passed to Hyper | Sending; socket task retains connection permit and original lifetime deadline |
+| Decorated | HEAD | Same handler/status/headers, with body suppressed by routing; handler work may still have run |
+| Sending | Body finishes | Delivered; close the non-keepalive connection and release its permit |
+| Sending | Peer disconnect, lifetime or shutdown deadline | Disconnected; drop delivery/connection, release permit; independent dispatched price work survives |
+
+Invariants: constructing a response is not proof the peer received it.
+Application state and committed SQLite changes are not rolled back on failed
+delivery. Inactive/active presence retries are not an exactly-once command
+protocol. The fixed connection pools bound slow response delivery independently
+of handler semaphores. Sockets rejected before HTTP parsing have no application
+response and therefore no response-header guarantee.
+
+Evidence: connection-lifetime, graceful/forced drain, cancellation-independent
+refresh, GET/HEAD revalidation and security-header tests in `operations_tests.rs`.
+The real streaming fixtures for 18 also distinguish headers from body completion.
+
+## 18. Browser fetch transport completion
+
+Implementation: `poll`, `inactivePresence`, `refreshFeed` in `dashboard.js`.
+
+States: `Requesting`, `Headers(body_open)`, `ReadingBody`, `Consumed`,
+`Cancelling`, `Released`. This composes with each application's worker state:
+resolving `fetch()` means headers arrived, not that the transport is finished.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Requesting | Native fetch resolves | Headers; retain controller and request deadline |
+| Headers | Accepted active-presence/price/news status | ReadingBody using `text()`/`json()` under that same deadline |
+| Headers | Rejected status, old generation, or inactive delivery needs no body | Cancelling; terminal cleanup aborts unread transport |
+| ReadingBody | Complete bytes and decoding succeed | Consumed; publication has its own guards (21–22) |
+| Requesting / Headers / ReadingBody | Deadline, hide, transport or decoding failure | Cancelling; abort signal is set before owner/deadline cleanup |
+| Consumed / Cancelling | `finally` | Abort any remaining transport, clear deadline, release worker ownership and schedule only the appropriate current retry |
+| Released | Native request-finished/request-failed event | Native transport settlement may follow cancellation asynchronously; there is no abandoned body with a live controller |
+
+Invariants: an early rejected response must not turn its body into work with
+neither a deadline nor an owner. Successful body consumers retain their existing
+body-inclusive deadlines. Inactive delivery deliberately cancels its unused
+body after headers. Cleanup never waits for a rejected body to finish, and
+only the current visibility generation may publish or change retry cadence.
+Rust provider responses instead release their body through response drop; the
+browser lifecycle requires explicit cancellation (**F8**).
+
+Evidence: three `rejected … response cancels its stalled body before retry`
+tests serve real partial HTTP bodies, recover on retry, and verify a peak of
+one native request plus closure at the fixture server. `inactive presence
+cancels an unread successful response body` covers the header-only 200 path.
+These tests do not mock fetch or suppress abort. Fixture/test deadlines bound
+verification itself. Existing body-timeout and old-generation tests remain.
+
+## 19. Inactive presence delivery
+
+Implementation: `inactivePresence`, `stop`, `inactiveController` in `dashboard.js`.
+
+States: `Idle`, `BeaconQueued`, `FallbackInFlight`, `Cancelling`. Beacon delivery
+belongs to the user agent; fallback ownership belongs to this document.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Idle | No session / repeated stop while already stopped | No delivery |
+| Idle | Stop; `sendBeacon` accepts payload | BeaconQueued; no acknowledgement or application-owned promise; later delivery is best effort |
+| Idle | Beacon absent, returns false or throws | FallbackInFlight; reserve the one controller and a 3s keepalive deadline |
+| FallbackInFlight | Another stop across hide/show generations | No second fallback or beacon; retain the existing owner |
+| FallbackInFlight | Visible restart | Active workers may resume; retain inactive owner until its independent settlement |
+| FallbackInFlight | Headers arrive, irrespective of status | Cancelling → Idle; cancel unused body, clear deadline and controller |
+| FallbackInFlight | Transport failure or deadline abort settles | Idle; clear deadline/controller; a later stop can try again |
+| BeaconQueued | User agent delivers/drops payload | No observable acknowledgement; a later stop may enqueue another beacon within user-agent limits |
+
+Invariants: at most one application-owned inactive fallback is unsettled per
+document, including rapid visibility cycling (**F9**). It is independent of the
+active-heartbeat worker and cannot leak an unread response body (**F8**).
+Accepted beacons are not tracked as single-flight fallbacks. Failed/skipped
+delivery relies on the server's 15s TTL; this is not a durable delivery queue.
+An already-delivered inactive command cannot be undone by browser cancellation;
+arrival ordering and subsequent heartbeat repair remain as documented in 4.
+
+Evidence: `inactive presence stays single flight with … beacon and recovers
+after timeout` covers false, missing and throwing beacon capabilities, 17 stop
+events under a held response, timeout release and delivery on a later stop.
+
+## 20. SQLite job and connection lifetime
+
+Implementation: `storage::{run_blocking, open_connection, init_db_sync,
+load_price_state_sync_with_hook, store_refresh_sync}`.
+
+States: `Queued`, `OpeningReadOnly` or `OpeningWrite`, `Transaction`,
+`WaitingForLock`, `Finished`, `Failed`, `Closed`. Caller cancellation is an
+independent flag; it does not cancel a queued/running blocking closure.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Async call | Spawn blocking closure | Queued; capture request-lease clone when present; background writes retain refresh ownership instead |
+| Queued | Blocking worker available | OpeningReadOnly for price/health reads; OpeningWrite for initialization/refresh |
+| OpeningReadOnly | File absent/unreadable or schema/query failure | Failed; never create or migrate a database in a read path |
+| OpeningWrite | Open/create succeeds | Enable foreign keys, then enter initialization/write transaction from 8 |
+| Connection / transaction | SQLite lock conflict | WaitingForLock under SQLite's busy handling; no await or blocking work on an async worker |
+| WaitingForLock | Lock becomes available / busy failure | Resume transaction / Failed; caller does not add a hidden automatic retry loop |
+| Transaction | Commit succeeds / any error | Finished / Failed with rollback boundary from 8 |
+| Any queued/running job | Caller dropped or timed out | Closure and its lease remain alive; run to completion or unwind |
+| Finished / Failed | Scoped statements, transaction and connection drop | Closed; release final lease/owner; async result may have no remaining caller |
+
+Invariants: the database path and diagnostic SQLite errors never become public
+responses. Schema rollback is not filesystem rollback: opening a writable path
+can create a file, and initialization failure may leave a version-0 file for a
+later startup attempt. Runtime reads never repair/migrate a missing or corrupt
+database implicitly. Restart resets process ownership, not committed state.
+Only one application instance may own the database; these are not distributed
+locks. A failed refresh retains its recorded attempt gate/cooldowns.
+
+Evidence: health read-only/missing-file checks, held blocking-job cancellation
+and timeout cases, transactional read/write interleavings, failed migration,
+atomic rollback and restart tests. No additional connection-lifetime defect was
+confirmed in this review; F1's shared leases still protect queued/running work.
+
+## 21. Price response acceptance and retention
+
+Implementation: `validate`, `poll`, `receivePrice` in `dashboard.js`.
+
+States: `Untrusted`, `Decoded`, `ShapeAccepted`, `Ordered`, `Published`,
+`Retained`, `Rejected`. This is separate from transport and displayed aging.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Untrusted | Price GET status other than OK/503, or rejected presence status | Rejected; cancel unused body using 18 |
+| Untrusted | Accepted status and complete JSON/text | Decoded; legacy presence without a price requests bounded GET fallback |
+| Decoded | Invalid status/arrays, numeric/source/health shape, duplicate contributor names, or invalid count bound | Rejected; retain previous report and age anchors; bounded polling continues |
+| Decoded | Price GET 503 without UNAVAILABLE | Rejected; a middleware busy/error object is not a price report |
+| ShapeAccepted | Visibility generation changed / sequence older than accepted report | Ignore; no report/age replacement |
+| ShapeAccepted | Current generation and request sequence accepted | Ordered; advance accepted request number |
+| Ordered | UNAVAILABLE while retained quote rows exist | Retained; keep report/anchors, show price failure; the accepted sequence still advances |
+| Ordered | Usable report or no prior quote rows to retain | Published; replace report, anchor ages to this request, clear price error |
+| Rejected / Retained | Later valid accepted report | Published; recover without erasing the prior cards during failure |
+
+Invariants: transport status, decoding, shape acceptance, ordering and
+publication are distinct gates. Startup prices and ordinary GETs share ordering
+and retention. The validator is a defensive shape/value check, not a second
+implementation of every server semantic constraint; server coverage/freshness
+rules remain in 9 and the source contract. Text rendering does not execute
+source names, warnings or error messages. A response cannot reset ages merely
+because it finished later (F3/F6).
+
+Evidence: startup fallback, malformed/500/503 retention/recovery, safe-text/CSP,
+old-generation, cross-worker ordering and native delayed-transit tests. This
+review confirmed missing transport cleanup before rejection (F8), not a new
+server-generated contradictory price report.
+
+## 22. RSS content acceptance and DOM publication
+
+Implementation: `refreshFeed`, `lastFeedXml`, staged `DocumentFragment` in
+`dashboard.js`; independent of server marker validation and retry scheduling.
+
+States: `NoAcceptedFeed`, `Accepted(previous_xml)`, `Candidate`, `Parsed`,
+`Staged`, `Published`, `Rejected`.
+
+| From | Event / guard | To / effects |
+| --- | --- | --- |
+| Any accepted-feed state | Current response has no string XML | Rejected; preserve prior DOM/XML, publish recoverable feed status |
+| Accepted | XML identical to last accepted value | Retain DOM and scroll position; update current cache/refresh status only |
+| Any accepted-feed state | Different string XML | Candidate; parse detached XML, not HTML |
+| Candidate | Parser error | Rejected; accepted XML/DOM remain unchanged |
+| Parsed | Iterate channel items | Stage at most 30 unique HTTP(S) links with nonempty titles as text; skip invalid/unsafe/duplicate links |
+| Parsed / Staged | No usable headline | Rejected; never replace previous headlines with an empty invalid candidate |
+| Staged | At least one usable headline | Published; replace children once, reset scroll/dwell, then record accepted XML |
+| Rejected | Later usable current response | Published; recover independently of price/presence workers |
+
+Invariants: failed XML or link validation cannot advance `lastFeedXml` or erase
+accepted headlines. Same-XML optimization applies only after successful
+publication. Parsing/staging/publication are synchronous after the current-owner
+check, so visibility events cannot interleave halfway through DOM replacement.
+The server's bounded marker check is not proof that XML is well formed or has
+usable headlines; browser rejection remains necessary. Pause affects movement,
+not acceptance. Retry delays and hidden periods belong to 13, not this cache.
+
+Evidence: safe-link/text rendering, retained-headline failure/recovery, old
+header/body completion, refresh-status and pause/motion tests. No additional
+publication defect was confirmed in this pass.
+
 ## Confirmed reachable violations, ranked by impact
 
 These are executable counterexamples, not hypothetical enum combinations.
-Regressions were run against the original implementation before corrections.
-All five failure modes below are corrected; four related Beads issues group
-the fixes. Priority reflects effect and exposure, not just ease of reproduction.
+Regressions were run against each review's baseline before corrections.
+All nine failure modes below are corrected; eight related Beads issues group
+the fixes. F1–F5 are from the initial review; F6–F7 are the first follow-up;
+F8–F9 are from the additional inventory review at `6525619`.
+Priority reflects effect and exposure, not just ease of reproduction.
 
 | Finding / issue | Reachable trace and observed evidence before correction | Impact / correction / regression |
 | --- | --- | --- |
 | **F1 — P1**, `bitcoin_price_tracker-jrk.4` | Admit request with concurrency=1 → `run_blocking` job enters held work → abort caller → HTTP permit drops but blocking work continues → retry returns **200**, expected **503**. Repeating this schedule can queue/run work beyond the route limit. A 20s handler timeout has the same lifetime split. | Availability: cancellation/retry load bypasses work bounds. Share the admitted permit through the task-local request scope and capture a clone in queued/running blocking jobs. `cancelled_request_retains_capacity_until_its_blocking_storage_job_finishes` and `timed_out_request_retains_capacity_until_its_blocking_storage_job_finishes` verify rejection while held, independent health and subsequent recovery. |
+| **F8 — P2**, `bitcoin_price_tracker-3fx.1` | Native price 500 / presence 503 / news 503 sends headers plus an unfinished body → worker rejects and clears deadline without aborting → retry starts while the original native request remains open: peak **2**, expected **1**. Inactive delivery's header-only 200 also leaves **1** server transfer open after 3.1s, expected **0**. Four regressions fail on `6525619`. | Error recovery can retain stale transfers and consume origin connection capacity despite worker deadlines. Abort remaining transport in all three workers' terminal cleanup and in inactive delivery. Real local HTTP stream tests verify native cancellation, no retry overlap and successful recovery; existing body-consuming and visibility tests preserve their deadlines/ownership. |
 | **F2 — P2**, `bitcoin_price_tracker-jrk.1` | Rate=1: consume at t0; consume refill at t1; a delayed caller sampled at t0 acquires mutex after t1 and fails but rewinds `updated`; another t1 call incorrectly succeeds. Regression failed with “the same second must not refill twice.” Sampling outside the mutex makes this interleaving possible under concurrent admission. | Over-admission under load. Clamp accounting time to its prior value under the bucket lock. `delayed_admission_cannot_refill_an_already_accounted_interval` forces that ordering and checks the next legitimate refill. |
 | **F3 — P2**, `bitcoin_price_tracker-jrk.2` | Hold first price GET → hide/show synchronously → resumed startup presence is held → cancelled old GET settles and starts a new GET → new GET renders **$200,000** → release earlier startup cache → display regresses to **$100,150** in the same generation. | Incorrect quote/health display and resetting ages to an older report. Order accepted price results across both workers by request sequence; discard older price results/errors. Chromium `a delayed startup price cannot overwrite a newer resumed price response` reproduces with real aborted fetch and held route response, without ignoring abort artificially. |
 | **F4 — P2**, `bitcoin_price_tracker-jrk.2` | Cache requests short 2s retry → hide after response → advance 1s → shift wall clock ±1h → show. Backward shift retains old headline beyond the due time; forward shift fetches immediately instead of respecting the remaining second. Both regressions failed. | Delayed news recovery or premature retry. Use `performance.now()` for retry deadlines and scroll dwell. Chromium `RSS retry delay survives a backward/forward wall-clock change` verifies remaining delay and recovery in both directions. |
+| **F6 — P2**, `bitcoin_price_tracker-940.1` | Server evaluates four quotes at age **89s** → hold the real startup presence or price response for **2.1s**, below both request deadlines → receive it at age 91s → dashboard reports **LIVE**, expected **STALE**. On a later GET this can restore an already-expired report to LIVE. All three cases fail on `c4adeb4`. | Incorrect freshness and aggregate eligibility on slow connections. Anchor quote aging at monotonic request start; keep receipt time separate for connection messages. This deliberately overestimates age by at most the request duration rather than extending freshness after arrival. Chromium `startup/price/retry response transit cannot make expired quotes fresh on arrival` verifies immediate exclusion, an unavailable displayed average, later recovery and bounded worker ownership. |
+| **F9 — P2**, `bitcoin_price_tracker-3fx.2` | Hold inactive fallback headers → 16 hide/show cycles plus final hide within 100ms → **17** simultaneous inactive fetches, expected **1** application-owned fallback. False, missing and throwing beacon capabilities all reproduce it. | Avoidable per-tab request/timer pressure and presence-budget contention during visibility cycling. Reserve `inactiveController` before fetch and retain it across generations until settlement. Three regressions verify one held fallback, release after the 3s deadline and a new delivery on a later stop. This does not claim to fix the separate synchronized-admission capacity study. |
 | **F5 — P3**, `bitcoin_price_tracker-jrk.3` | Pass four valid finite positive `f64::MAX` observations through real `store_refresh_sync` transaction → load persisted snapshot → average is **Some(inf)**, expected finite `f64::MAX`. | Durable summary corruption. Public price aggregation was already protected, limiting user impact. Use incremental bounded mean for persistence too. `refresh_persists_finite_summaries_for_extreme_valid_quotes` verifies both largest and smallest positive finite inputs across replacement transactions. |
+| **F7 — P3**, `bitcoin_price_tracker-940.2` | Reach feed bottom → allow 100ms of dwell → pause/hide/hover/focus/manual interaction/reduced motion for 4s → resume → first 100ms wraps to scrollTop **1**, expected retained bottom **372**. All six cases fail on `c4adeb4`. | Reading position jumps immediately after resuming. Reset dwell on interruption, ineligible ticks and feed replacement; use an explicit null sentinel. Chromium `RSS bottom dwell restarts after …` verifies position retention during interruption and for a full new three-second dwell, then wrap. |
 
 ## Review boundaries and validation
 
-The inventory covers application-owned runtime state in `src/` and both
+The inventory covers 22 application-owned runtime machines in `src/` and both
 dashboard closures, including schema migration, cancellation, restart,
 completion order, retries and shutdown. Local fixtures, injected clocks,
 semaphores/channels, transaction hooks and Chromium virtual time exercise the
 named traces; ordinary checks never rely on public provider availability.
 This is an implementation audit, not model checking of every interleaving.
 
-No additional confirmed invalid transition was found in the reviewed refresh,
-presence, migration and atomic-write paths. Best-effort beacon ordering,
+The first follow-up rechecked the original 15 machines against source and existing
+regressions, with particular attention to storage leases after cancellation,
+refresh ownership/activation during I/O, per-provider cooldown completion,
+transaction rollback/restart, cross-worker publication and visibility timers.
+No additional confirmed invalid transition was found in the reviewed server
+refresh, presence, migration and atomic-write paths. Best-effort beacon ordering,
 process-local restart resets, disposable RSS work on exit and independently
 sampled response metadata are intentional limits recorded above. Existing
 `bitcoin_price_tracker-p6w` tracks measured synchronized-admission burst recovery
 separately; the corrections here do not claim to resolve that capacity study.
 
+The additional inventory separates the seven machines in 16–22 from those
+broader descriptions. It confirms two new P2 groups, F8–F9, rather than reopening
+the earlier corrected findings. Real native response bodies expose ownership
+that the earlier route-fulfillment fixtures completed too soon to observe.
+The new inbound-body Rust case also checks a previously untested cancellation
+boundary; it passes without a server implementation change. The scope remains
+application runtime state, not CI/release orchestration, distributed coordination
+or verification of every dependency-internal state machine.
+
 Required validation: `cargo fmt --all -- --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, and
 `npm test --prefix tests/browser` after locked npm installation and Chromium
-preparation. Validation passed: formatting, Clippy with warnings denied, 116
-Rust tests (one optional WebDriver test ignored), and all 48 Chromium tests.
-The seven new regression cases cover the five failure modes above, with both
-cancellation and handler-timeout storage lifetimes exercised.
+preparation. Follow-up validation passed on 2026-11-15: formatting, Clippy with
+warnings denied, 116 Rust tests (one optional WebDriver test ignored), and all
+57 Chromium tests. The initial review added seven cases for F1–F5, including
+cancellation and handler-timeout storage lifetimes. The follow-up adds nine
+cases for F6–F7; all nine failed on the unmodified `c4adeb4` dashboard and passed
+after correction. Additional-inventory validation passed on 2026-11-15:
+formatting, locked Clippy with warnings denied, 117 Rust tests (one optional
+WebDriver test ignored), and all 64 Chromium tests. Seven new browser regressions
+for F8–F9 all failed on the unmodified `6525619` dashboard and pass after
+correction; one new Rust case covers partial-body admission, concurrency,
+cancellation and retry. Local documentation links and `git diff --check` pass.
+Validation reported for this additional review is local; earlier PR/release
+validation does not verify F8–F9's changes.
+No public provider calls were used.
 Use the checked-out `rust-toolchain.toml`; this upstream baseline
 pins Rust 1.99.1. Runtime image/dependencies are unchanged; the optional external
 WebDriver smoke test is not part of deterministic validation.
