@@ -1,11 +1,12 @@
 # Application state machines
 
-Reviewed 2026-11-11, starting at `b4be784` (`origin/master`), with the corrections
-described below. This is the single reference for the application's explicit
-enums and implicit state carried by locks, timestamps, timers, transactions and
-browser flags. Beads task `bitcoin_price_tracker-jrk` owns the audit; Beads, not
-this document, owns ongoing work tracking. Wire-field definitions remain in
-[the source contract](source-contract.md).
+Initial review: 2026-11-11 at `b4be784`, merged in PR #52 (`c4adeb4`).
+Follow-up review: 2026-11-15 at `c4adeb4` (`origin/master`), with the additional
+corrections described below. This is the single reference for the application's
+explicit enums and implicit state carried by locks, timestamps, timers,
+transactions and browser flags. Beads tasks `bitcoin_price_tracker-jrk` and
+`bitcoin_price_tracker-940` record the reviews; Beads owns ongoing work tracking.
+Wire-field definitions remain in [the source contract](source-contract.md).
 
 States below are predicates over existing fields, not proposed new enums.
 Independent machines compose: a fresh quote can coexist with failed provider
@@ -28,7 +29,8 @@ fails a guard leaves the machine unchanged.
 | News cache | Short-held `FeedCache` mutex and `refreshing` reservation | Process-local; monotonic completion time and a 12s task deadline |
 | Price browser workers | `busy`, controller, timer, visibility generation | One unsettled request per kind; 3s presence / 8s price deadlines |
 | Browser report publication | Request sequence shared by startup presence and price GET | Earlier-issued responses cannot replace a later-issued accepted report |
-| Browser age / news retry / scroll dwell | `performance.now()` and bounded timers | Monotonic elapsed time; wall clock is used for displaying dates only |
+| Browser quote age | Report's request-start anchor in `performance.now()` | Conservatively includes transit and body-consumption time; receipt time separately anchors connection messages |
+| Browser news retry / scroll dwell | `performance.now()` and bounded timers | Retry time survives hidden periods; bottom dwell resets whenever motion is interrupted |
 
 Only one application instance may own a database. These locks, rate budgets,
 viewer IDs and cooldowns are not coordination between processes. Restart resets
@@ -353,7 +355,7 @@ has `Idle`, `InFlight(owner_generation)`, `Waiting(timer)`.
 | Initializing | Secure random per-document ID available | Hidden/Stopped or start visible generation; no browser storage needed |
 | Stopped | Visible start/pageshow and ID available | Running; increment generation; request startup presence+cached price; start 1s age rendering |
 | Running | Repeated start | No-op |
-| Idle / Waiting worker | Poll, running and not busy | InFlight; own controller and body-inclusive deadline |
+| Idle / Waiting worker | Poll, running and not busy | InFlight; capture monotonic request start, own controller and body-inclusive deadline |
 | InFlight | Another poll for same kind | No-op; never overlap same-kind requests |
 | InFlight presence | Admitted startup object valid | Accept price subject to report sequence; first GET after 1s if refreshing, otherwise 5s |
 | InFlight presence | Startup object absent/invalid or heartbeat failed | Bounded GET fallback; continue independent heartbeat loop |
@@ -375,32 +377,41 @@ distinct opener-tab IDs, and new cross-worker response-order regressions in
 
 ## 11. Dashboard report and displayed freshness
 
-State: optional last valid report, monotonic receipt time, latest accepted
-price-request number, and independent price/presence errors. Display labels
-include `Connecting`, `LIVE`, `DEGRADED`, `STALE`, `UNAVAILABLE`, `OFFLINE`,
+State: optional last valid report, monotonic receipt and request-start times,
+latest accepted price-request number, and independent price/presence errors.
+Display labels include `Connecting`, `LIVE`, `DEGRADED`, `STALE`, `UNAVAILABLE`, `OFFLINE`,
 `IDLE` and `UNSUPPORTED`.
 
 | From | Event / guard | To / effects |
 | --- | --- | --- |
-| No report | Valid current-generation price response | Save report and receipt time; evaluate display |
+| No report | Valid current-generation price response | Save report, receipt time and its request-start age anchor; evaluate display |
 | Any | Earlier-issued response than latest accepted report | Ignore, including its price error; do not reset ages or roll back quote/health state |
-| Cached report with quotes | New UNAVAILABLE response or transport/body/contract failure | Retain report and age anchor; show OFFLINE / warning |
-| Any | New accepted report with usable rows | Replace report, reset age anchor, clear price error |
-| Cached report | 1s render tick | Add elapsed monotonic seconds to reported ages; drop expired contributors and recompute finite average/spread |
+| Cached report with quotes | New UNAVAILABLE response or transport/body/contract failure | Retain report and both time anchors; show OFFLINE / warning |
+| Any | New accepted report with usable rows | Replace report; use that request's start for age, record receipt for messages, clear price error |
+| Arriving / cached report | Initial render or 1s tick | Add whole monotonic seconds since request start to reported ages; immediately drop expired contributors and recompute finite average/spread |
 | LIVE | Some contribution expires / heartbeat error | DEGRADED; no local upgrade to LIVE |
 | Report with retained rows | Last contribution expires | STALE (or OFFLINE if price transport failed) |
 | Any running display | Price error / heartbeat recovery | OFFLINE / clear heartbeat warning; status still respects report and age |
 | Any | Stop / unsupported | IDLE / UNSUPPORTED overrides running display |
 
 Invariants: unknown/future/stale observations never become fresh solely from
-local elapsed time. Unavailable/error responses cannot erase good quote cards.
+local elapsed time. Response transit cannot renew an expired contributor (**F6**).
+The browser cannot measure the server's evaluation instant without clock
+synchronization, so it conservatively includes the entire request duration.
+This may expire a quote early by up to that duration; it does not add a fresh
+window after arrival. Both startup presence prices and ordinary/retry GETs use
+this rule. Connection messages still measure time since receipt. Unavailable/error
+responses cannot erase good quote cards or reset either anchor.
 Report acceptance is ordered by request issuance, not Unix timestamps (which
 can move backward); it is not a server-side snapshot revision protocol. Source
 names, warnings and provider messages render as text. Displayed observation
 date comes from the latest nonfuture source observation, not snapshot save time.
 
 Evidence: browser expiry, retained network/500/503/malformed responses,
-recovery, safe-text/CSP checks, extreme values, and **F3** regression.
+recovery, safe-text/CSP checks, extreme values, **F3**, and **F6** regressions.
+The three `response transit cannot make expired quotes fresh on arrival` cases
+hold real startup/price/retry responses for 2.1s, below their deadlines, then
+verify immediate expiry and eventual recovery with one request per worker.
 
 ## 12. Server news cache
 
@@ -458,22 +469,28 @@ remaining-delay, missing capability and new forward/backward-clock tests.
 ## 14. Feed motion
 
 Motion states compose `running`, user/reduced-motion pause, hover/focus/manual
-interaction and `scrollable|at_bottom`.
+interaction and `scrollable|at_bottom`. Bottom dwell is independently `Unset` or
+`Dwelling(start_monotonic)`; only uninterrupted eligible motion retains it.
 
 | From | Event / guard | To / effects |
 | --- | --- | --- |
 | Initializing | Read reduced-motion preference | Paused if requested, otherwise unpaused |
-| Paused / Unpaused | Toggle button | Flip pause; update label and aria-pressed |
-| Either | Wheel/touch/pointer/key interaction | Paused until explicit resume or preference change |
-| Either | Reduced-motion preference changes | Set pause to new preference |
-| Running motion | Hidden, hovered, focused, paused or not scrollable | No movement on 50ms tick |
-| Running motion | Visible, unpaused, unhovered, unfocused and scrollable | Move one pixel per tick; reset bottom dwell when not at bottom |
-| At bottom | Eligible ticks, dwell greater than 3 monotonic seconds | Wrap to top and reset dwell |
-| Any | Accept replacement feed | Reset scroll position to top |
+| Paused / Unpaused | Toggle button | Flip pause; clear dwell, update label and aria-pressed |
+| Either | Wheel/touch/pointer/key interaction | Paused until explicit resume or preference change; clear dwell |
+| Either | Reduced-motion preference changes | Set pause to new preference; clear dwell |
+| Any motion | Hide/pagehide, hover or focus enters feed | Clear dwell immediately |
+| Running motion | Hidden, hovered, focused, paused or not scrollable | No movement on 50ms tick; dwell stays Unset |
+| Running motion | Visible, unpaused, unhovered, unfocused, scrollable and not at bottom | Move one pixel per tick; clear dwell |
+| At bottom, Unset | Eligible tick | Dwelling(now), no movement |
+| At bottom, Dwelling | Eligible ticks, uninterrupted dwell greater than 3 monotonic seconds | Wrap to top and clear dwell |
+| Any | Accept replacement feed | Reset scroll position to top and clear dwell |
 
 Pause affects movement, not feed acquisition. CSS also pauses page effects
-when hidden or reduced motion is requested. Browser tests cover scrolling,
-pause, reduced motion and hidden-page effects.
+when hidden or reduced motion is requested. Interrupted time cannot count toward
+a subsequent bottom dwell (**F7**); the first eligible tick after resuming starts
+a new three-second dwell. Browser regressions cover pause/resume, hide/show,
+hover, focus, manual scrolling and reduced-motion changes, including no movement
+during interruption and wrapping only after the new dwell.
 
 ## 15. Embedded asset revalidation
 
@@ -497,9 +514,10 @@ pause, reduced motion and legacy deployment caches; Rust tests cover GET/HEAD,
 ## Confirmed reachable violations, ranked by impact
 
 These are executable counterexamples, not hypothetical enum combinations.
-Regressions were run against the original implementation before corrections.
-All five failure modes below are corrected; four related Beads issues group
-the fixes. Priority reflects effect and exposure, not just ease of reproduction.
+Regressions were run against each review's baseline before corrections.
+All seven failure modes below are corrected; six related Beads issues group
+the fixes. F1–F5 are from the initial review; F6–F7 extend it on 2026-11-15.
+Priority reflects effect and exposure, not just ease of reproduction.
 
 | Finding / issue | Reachable trace and observed evidence before correction | Impact / correction / regression |
 | --- | --- | --- |
@@ -507,7 +525,9 @@ the fixes. Priority reflects effect and exposure, not just ease of reproduction.
 | **F2 — P2**, `bitcoin_price_tracker-jrk.1` | Rate=1: consume at t0; consume refill at t1; a delayed caller sampled at t0 acquires mutex after t1 and fails but rewinds `updated`; another t1 call incorrectly succeeds. Regression failed with “the same second must not refill twice.” Sampling outside the mutex makes this interleaving possible under concurrent admission. | Over-admission under load. Clamp accounting time to its prior value under the bucket lock. `delayed_admission_cannot_refill_an_already_accounted_interval` forces that ordering and checks the next legitimate refill. |
 | **F3 — P2**, `bitcoin_price_tracker-jrk.2` | Hold first price GET → hide/show synchronously → resumed startup presence is held → cancelled old GET settles and starts a new GET → new GET renders **$200,000** → release earlier startup cache → display regresses to **$100,150** in the same generation. | Incorrect quote/health display and resetting ages to an older report. Order accepted price results across both workers by request sequence; discard older price results/errors. Chromium `a delayed startup price cannot overwrite a newer resumed price response` reproduces with real aborted fetch and held route response, without ignoring abort artificially. |
 | **F4 — P2**, `bitcoin_price_tracker-jrk.2` | Cache requests short 2s retry → hide after response → advance 1s → shift wall clock ±1h → show. Backward shift retains old headline beyond the due time; forward shift fetches immediately instead of respecting the remaining second. Both regressions failed. | Delayed news recovery or premature retry. Use `performance.now()` for retry deadlines and scroll dwell. Chromium `RSS retry delay survives a backward/forward wall-clock change` verifies remaining delay and recovery in both directions. |
+| **F6 — P2**, `bitcoin_price_tracker-940.1` | Server evaluates four quotes at age **89s** → hold the real startup presence or price response for **2.1s**, below both request deadlines → receive it at age 91s → dashboard reports **LIVE**, expected **STALE**. On a later GET this can restore an already-expired report to LIVE. All three cases fail on `c4adeb4`. | Incorrect freshness and aggregate eligibility on slow connections. Anchor quote aging at monotonic request start; keep receipt time separate for connection messages. This deliberately overestimates age by at most the request duration rather than extending freshness after arrival. Chromium `startup/price/retry response transit cannot make expired quotes fresh on arrival` verifies immediate exclusion, an unavailable displayed average, later recovery and bounded worker ownership. |
 | **F5 — P3**, `bitcoin_price_tracker-jrk.3` | Pass four valid finite positive `f64::MAX` observations through real `store_refresh_sync` transaction → load persisted snapshot → average is **Some(inf)**, expected finite `f64::MAX`. | Durable summary corruption. Public price aggregation was already protected, limiting user impact. Use incremental bounded mean for persistence too. `refresh_persists_finite_summaries_for_extreme_valid_quotes` verifies both largest and smallest positive finite inputs across replacement transactions. |
+| **F7 — P3**, `bitcoin_price_tracker-940.2` | Reach feed bottom → allow 100ms of dwell → pause/hide/hover/focus/manual interaction/reduced motion for 4s → resume → first 100ms wraps to scrollTop **1**, expected retained bottom **372**. All six cases fail on `c4adeb4`. | Reading position jumps immediately after resuming. Reset dwell on interruption, ineligible ticks and feed replacement; use an explicit null sentinel. Chromium `RSS bottom dwell restarts after …` verifies position retention during interruption and for a full new three-second dwell, then wrap. |
 
 ## Review boundaries and validation
 
@@ -518,8 +538,12 @@ semaphores/channels, transaction hooks and Chromium virtual time exercise the
 named traces; ordinary checks never rely on public provider availability.
 This is an implementation audit, not model checking of every interleaving.
 
-No additional confirmed invalid transition was found in the reviewed refresh,
-presence, migration and atomic-write paths. Best-effort beacon ordering,
+The follow-up rechecked the 15 machines against current source and existing
+regressions, with particular attention to storage leases after cancellation,
+refresh ownership/activation during I/O, per-provider cooldown completion,
+transaction rollback/restart, cross-worker publication and visibility timers.
+No additional confirmed invalid transition was found in the reviewed server
+refresh, presence, migration and atomic-write paths. Best-effort beacon ordering,
 process-local restart resets, disposable RSS work on exit and independently
 sampled response metadata are intentional limits recorded above. Existing
 `bitcoin_price_tracker-p6w` tracks measured synchronized-admission burst recovery
@@ -528,10 +552,12 @@ separately; the corrections here do not claim to resolve that capacity study.
 Required validation: `cargo fmt --all -- --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, and
 `npm test --prefix tests/browser` after locked npm installation and Chromium
-preparation. Validation passed: formatting, Clippy with warnings denied, 116
-Rust tests (one optional WebDriver test ignored), and all 48 Chromium tests.
-The seven new regression cases cover the five failure modes above, with both
-cancellation and handler-timeout storage lifetimes exercised.
+preparation. Follow-up validation passed on 2026-11-15: formatting, Clippy with
+warnings denied, 116 Rust tests (one optional WebDriver test ignored), and all
+57 Chromium tests. The initial review added seven cases for F1–F5, including
+cancellation and handler-timeout storage lifetimes. The follow-up adds nine
+cases for F6–F7; all nine failed on the unmodified `c4adeb4` dashboard and passed
+after correction. No public provider calls were used.
 Use the checked-out `rust-toolchain.toml`; this upstream baseline
 pins Rust 1.99.1. Runtime image/dependencies are unchanged; the optional external
 WebDriver smoke test is not part of deterministic validation.

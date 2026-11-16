@@ -213,6 +213,52 @@ test('freshness expires between responses without upgrading unknown or future qu
   assert.deepEqual(await page.locator('#sources .source-detail').allTextContents(), ['90s', '90s', 'Age unknown', 'Age unknown']);
 });
 
+for (const kind of ['startup', 'price', 'retry']) {
+  test(`${kind} response transit cannot make expired quotes fresh on arrival`, async t => {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const data = report({ warnings: ['Delayed evaluated report'] });
+    data.sources.forEach(source => { source.age_seconds = 89; source.last_success_at_unix = now - 89; });
+    const initial = report();
+    initial.sources.forEach(source => { source.age_seconds = 84; source.last_success_at_unix = now - 84; });
+    if (kind === 'retry') {
+      data.evaluated_at_unix = now + 5;
+      data.sources.forEach(source => { source.last_success_at_unix = now - 84; });
+    }
+    const app = await setup(t, {
+      presence: (route, body) => {
+        if (kind === 'startup' && body.include_price) { entered(route); return; }
+        return json(route, { active_viewers: 1 });
+      },
+      price: (route, count) => {
+        if ((kind === 'price' && count === 1) || (kind === 'retry' && count === 2)) { entered(route); return; }
+        return json(route, kind === 'retry' && count === 1 ? initial : report());
+      },
+    });
+    if (kind === 'retry') {
+      await text(app.page, 'status', 'LIVE');
+      await tick(app.page, 5100);
+    }
+    const held = await started;
+    // Stay within both real request deadlines; the report was evaluated before
+    // this transfer delay. No mocked fetch or suppressed abort is needed.
+    await tick(app.page, 2100);
+    if (kind === 'retry') await text(app.page, 'status', 'STALE');
+    await json(held, kind === 'startup' ? { active_viewers: 1, price: data } : data);
+    // Especially on retry, prove this response was accepted before inspecting
+    // freshness; the retained report may already be stale while it is held.
+    await text(app.page, 'warnings', 'Delayed evaluated report');
+    await text(app.page, 'sources', 'Coinbase');
+    assert.equal(await app.page.locator('#status').textContent(), 'STALE');
+    assert.equal(await app.page.locator('#avg').textContent(), 'Unavailable');
+    await text(app.page, 'coverage', '0 of 4');
+    await tick(app.page, 5100);
+    await text(app.page, 'status', 'LIVE');
+    assert.equal(app.maxPrices(), 1);
+    assert.equal(app.maxPresence(), 1);
+  });
+}
+
 test('LIVE expires locally as coverage drops', async t => {
   const data = report(); data.sources[0].age_seconds = 89;
   const { page } = await setup(t, { price: route => json(route, data) });
@@ -750,6 +796,42 @@ test('RSS scrolls automatically and pauses when requested', async t => {
   await tick(page, 1000);
   assert.equal(await page.locator('#feed-window').evaluate(el => el.scrollTop), pausedTop);
 });
+
+for (const interruption of ['pause', 'hidden', 'hover', 'focus', 'manual', 'reduced-motion']) {
+  test(`RSS bottom dwell restarts after ${interruption}`, async t => {
+    const xml = '<rss><channel>' + Array.from({ length: 10 }, (_, i) => `<item><title>Bitcoin headline ${i}</title><link>https://news.bitcoin.com/story-${i}/</link></item>`).join('') + '</channel></rss>';
+    const { page } = await setup(t, { news: route => json(route, { xml, stale: false }) });
+    await text(page, 'feed-list', 'Bitcoin headline 9');
+    const feed = page.locator('#feed-window');
+    await feed.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await tick(page, 100);
+    const bottom = await feed.evaluate(el => el.scrollTop);
+    assert.ok(bottom > 0);
+    if (interruption === 'hidden') await page.evaluate(() => window.changeVisibility(true));
+    else if (interruption === 'hover') await feed.dispatchEvent('mouseenter');
+    else if (interruption === 'focus') await feed.focus();
+    else if (interruption === 'manual') await feed.dispatchEvent('wheel');
+    else if (interruption === 'reduced-motion') {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await text(page, 'feed-toggle', 'Resume scrolling');
+    } else await page.locator('#feed-toggle').click();
+    await tick(page, 4000);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom);
+    if (interruption === 'hidden') await page.evaluate(() => window.changeVisibility(false));
+    else if (interruption === 'hover') await feed.dispatchEvent('mouseleave');
+    else if (interruption === 'focus') await feed.evaluate(el => el.blur());
+    else if (interruption === 'reduced-motion') {
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+      await text(page, 'feed-toggle', 'Pause scrolling');
+    } else await page.locator('#feed-toggle').click();
+    await tick(page, 100);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'resuming starts a new bottom dwell');
+    await tick(page, 2900);
+    assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'retain a full three-second dwell');
+    await tick(page, 200);
+    assert.ok(await feed.evaluate(el => el.scrollTop) < bottom, 'wrap after the new dwell');
+  });
+}
 
 test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
   const html = await readFile(new URL('../../src/ui.html', import.meta.url));
