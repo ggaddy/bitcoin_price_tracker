@@ -30,6 +30,90 @@ async fn health_is_read_only_and_does_not_activate_providers() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn incomplete_presence_body_cannot_mutate_admission_and_timeout_allows_retry() {
+    use axum::{body::Body, http::Request};
+    use hyper::body::{Bytes, Frame};
+    use std::{
+        convert::Infallible,
+        future::{Future, poll_fn},
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::sync::mpsc;
+    use tower::ServiceExt;
+
+    struct Chunks(mpsc::Receiver<Bytes>);
+    impl hyper::body::Body for Chunks {
+        type Data = Bytes;
+        type Error = Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+            self.get_mut()
+                .0
+                .poll_recv(cx)
+                .map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes))))
+        }
+    }
+
+    let mut app = TestApp::new().await;
+    app.configure(RuntimeConfig {
+        concurrency: 1,
+        ..Default::default()
+    });
+    let router = crate::handlers::router(app.state.clone());
+    let (chunks, receiver) = mpsc::channel(2);
+    chunks
+        .send(Bytes::from_static(
+            b"{\"session_id\":\"partial\",\"active\":",
+        ))
+        .await
+        .unwrap();
+    let request = router.clone().oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/presence")
+            .header("content-type", "application/json")
+            .body(Body::new(Chunks(receiver)))
+            .unwrap(),
+    );
+    tokio::pin!(request);
+    poll_fn(|cx| {
+        assert!(request.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(crate::presence::active_viewer_count(&app.state).await, 0);
+    assert_eq!(app.state.presence.generation(), 0);
+    assert_eq!(app.upstreams.request_counts(), [0; 4]);
+    // The partial body owns the route slot, but health has an independent pool.
+    assert_eq!(
+        app.request(
+            Method::POST,
+            "/api/presence",
+            Some(json!({"session_id": "retry", "active": true}))
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        app.request(Method::GET, "/health", None).await.0,
+        StatusCode::OK
+    );
+    tokio::time::advance(Duration::from_secs(20)).await;
+    assert_eq!(request.await.unwrap().status(), StatusCode::REQUEST_TIMEOUT);
+    assert!(chunks.send(Bytes::from_static(b"true}")).await.is_err());
+    assert_eq!(crate::presence::active_viewer_count(&app.state).await, 0);
+    app.presence_for("retry", true).await;
+    assert_eq!(crate::presence::active_viewer_count(&app.state).await, 1);
+    assert_eq!(app.state.presence.generation(), 1);
+    assert_eq!(app.upstreams.request_counts(), [0; 4]);
+}
+
 #[tokio::test]
 async fn viewer_cap_preserves_existing_heartbeats_removal_and_expiry() {
     let mut app = TestApp::new().await;

@@ -11,6 +11,7 @@
   let sessionId, running = false, generation = 0, ageTimer = null;
   let lastData = null, receivedAt = 0, ageStartedAt = 0, priceError = "", presenceError = "";
   let nextPriceRequest = 0, appliedPriceRequest = 0;
+  let inactiveController = null;
 
   function status(label) {
     // Only changes are announced by role=status, never routine heartbeats.
@@ -197,6 +198,9 @@
         else if (priceRequest >= appliedPriceRequest) priceError = "Price update unavailable; retained quotes may be out of date. Retrying automatically.";
       }
     } finally {
+      // Header-only rejection still owns a live response body. Cancel it before
+      // releasing this worker, including when no body was needed or consumed.
+      controller.abort();
       clearTimeout(deadline);
       worker.controller = null;
       worker.busy = false;
@@ -209,15 +213,21 @@
   }
 
   function inactivePresence() {
-    if (!sessionId) return;
+    if (!sessionId || inactiveController) return;
     const payload = JSON.stringify({ session_id: sessionId, active: false });
     try {
       if (typeof navigator.sendBeacon === "function" && navigator.sendBeacon("/api/presence", new Blob([payload], { type: "application/json" }))) return;
     } catch { /* A rejected beacon uses a bounded keepalive request. */ }
     const controller = new AbortController();
+    inactiveController = controller;
     const deadline = setTimeout(() => controller.abort(), 3000);
     fetch("/api/presence", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, keepalive: true, signal: controller.signal })
-      .catch(() => {}).finally(() => clearTimeout(deadline));
+      .catch(() => {}).finally(() => {
+        // Delivery needs only headers, so do not leave an unread body running.
+        controller.abort();
+        clearTimeout(deadline);
+        inactiveController = null;
+      });
   }
 
   function start() {
@@ -399,6 +409,7 @@
         ? `Bitcoin.com · Showing previous headlines — ${retry}`
         : `Bitcoin news temporarily unavailable — ${retry}`;
     } finally {
+      request.controller?.abort();
       clearTimeout(request.deadline);
       feedRequest = null;
       // A cancelled visibility period must not replace the current retry time.
