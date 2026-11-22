@@ -11,7 +11,7 @@ in Beads; setup and operations are in [README.md](README.md).
 CI runs `cargo audit --deny warnings` and `npm audit --audit-level=low` on pull
 requests, pushes to master, and weekly. These jobs fail visibly; neither uses
 `continue-on-error`. RustSec uses cargo-audit 0.23.0 with the application's
-pinned Rust 1.99.1 toolchain to read current advisory formats. Browser test
+pinned Rust 1.100.0 toolchain to read current advisory formats. Browser test
 packages are included in the npm scan.
 
 There are currently no accepted Rust or npm advisories. Before adding any advisory ID to

@@ -14,7 +14,7 @@ Install Rust with rustup, then run from the repository root:
 cargo run --locked
 ```
 
-Open `http://localhost:3000` in a visible tab. The repository pins Rust 1.99.1 in
+Open `http://localhost:3000` in a visible tab. The repository pins Rust 1.100.0 in
 [rust-toolchain.toml](rust-toolchain.toml); rustup selects that toolchain.
 Prices are stored at `data/bitcoin_prices.db` by default.
 
@@ -221,7 +221,7 @@ See the [API contract](docs/source-contract.md) for response fields and errors.
 
 ## Development and tests
 
-Run from the repository root. Rust 1.99.1, rustfmt, and Clippy are pinned by
+Run from the repository root. Rust 1.100.0, rustfmt, and Clippy are pinned by
 [rust-toolchain.toml](rust-toolchain.toml); Cargo declares the same minimum Rust
 version. Use locked dependencies:
 
