@@ -51,8 +51,9 @@ npm exec --prefix tests/browser -- playwright install chromium
 npm test --prefix tests/browser
 ```
 
-See [README.md](README.md#development-and-tests) for Linux browser dependencies,
-embedded-asset checks, optional Kache, Selenium, and container verification.
+See [docs/development.md](docs/development.md) for Linux browser dependencies,
+embedded-asset checks, load-harness tests, optional Kache, Selenium, and
+container verification.
 Runtime-image/native-dependency changes require the documented final-image
 verification and advisory review; the verifier needs host Python 3 and `readelf`.
 
@@ -90,8 +91,11 @@ process-local. Kubernetes manifests and rollout evidence live in the separate
   database paths or transport diagnostics out of public responses.
 - Follow [SECURITY.md](SECURITY.md) for native-library exposure and advisory
   exceptions. Do not suppress findings or extend review deadlines to pass CI.
-- Keep current work in Beads. [AUDIT.md](AUDIT.md), [SECURITY_AUDIT.md](SECURITY_AUDIT.md),
-  and [project_plan](project_plan) preserve dated history, not current work queues.
+- Keep current work in Beads. [docs/archive/audit-history.md](docs/archive/audit-history.md),
+  [docs/archive/security-audit-2026-09.md](docs/archive/security-audit-2026-09.md),
+  [docs/archive/project-plan.md](docs/archive/project-plan.md), and
+  [docs/security/review-history.md](docs/security/review-history.md) preserve dated
+  history, not current work queues.
 - AGENTS.md and CLAUDE.md are independent files. Keep their substantive guidance
   identical when editing either one.
 

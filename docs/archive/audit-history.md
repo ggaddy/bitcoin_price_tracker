@@ -6,9 +6,9 @@ work tracker.** Checkboxes, phase statuses, source line references, “uncommitt
 claims, and next checkpoints below describe their original sessions. Historical
 instructions to update this tracker are superseded by the Beads workflow.
 
-Use [README.md](README.md) for current setup/operations, the
-[source contract](docs/source-contract.md) for API behavior, and
-[SECURITY.md](SECURITY.md) for the checked-in security policy and review deadline.
+Use [README.md](../../README.md) for current setup, [docs/operations.md](../operations.md)
+for operations, the [source contract](../source-contract.md) for API behavior, and
+[SECURITY.md](../../SECURITY.md) for the checked-in security policy and review deadline.
 Use `bd ready` and `bd show <id>` for current work. The unfinished L3 asset-caching
 proposal is preserved in `bitcoin_price_tracker-f14`; consult Beads for its status.
 
@@ -122,7 +122,7 @@ is a required pre-merge checkpoint.
   `no-store` and edge BYPASS. Public 304 behavior awaits application deployment.
   Access is still **Allow Everyone** (`home-cluster-gaddy-it-public`); no Access
   policy was changed. Rule IDs/expressions and operational caveats are recorded
-  in [SECURITY.md](SECURITY.md) and the GitOps inventory.
+  in [SECURITY.md](../../SECURITY.md) and the GitOps inventory.
 
 **Next checkpoint:** application PR and all five required CI checks, then
 merge/release/deploy when requested. Release tags and the deployed image are
@@ -334,7 +334,7 @@ Files: `src/models.rs`, `src/storage.rs`, `src/pricing.rs`, `src/handlers.rs`, `
 P3.1 implementation evidence (September 7, 2026):
 
 - Added `src/models/source_contract.rs` with separate stored quote, provider health, computed source response, aggregate coverage, and price response types. Quotes carry nullable `last_success_at_unix` and a quote kind. Tagged last-attempt outcomes distinguish unknown, success, and failure with a typed safe error. Response types retain the existing fields and add explicit status, evaluated time, source age/freshness, coverage counts/contributors, and configured-provider health even when no quote exists.
-- [The source contract](docs/source-contract.md) specifies Unix observation/attempt timestamps, null legacy timestamps, quote-kind labels, health-only failure persistence, the exact 90-second freshness boundary, unknown/future timestamp handling, aggregate eligibility, status/HTTP compatibility, and migration/integration checks. Stored summaries remain persistence metadata. Coverage is represented once as configured/fresh counts plus contributor names; providers without quotes appear in `provider_health` rather than as invented numeric prices in `sources`.
+- [The source contract](../source-contract.md) specifies Unix observation/attempt timestamps, null legacy timestamps, quote-kind labels, health-only failure persistence, the exact 90-second freshness boundary, unknown/future timestamp handling, aggregate eligibility, status/HTTP compatibility, and migration/integration checks. Stored summaries remain persistence metadata. Coverage is represented once as configured/fresh counts plus contributor names; providers without quotes appear in `provider_health` rather than as invented numeric prices in `sources`.
 - This is the contract-definition step: the live API and SQLite schema deliberately still use existing models until P3.2–P3.5 supply trustworthy persisted observations. The module has a narrowly scoped, documented temporary dead-code allowance to remove during integration. No current API field claims per-source freshness, and no legacy timestamps are fabricated. README links to the contract and states this staging explicitly.
 - Added four serialization regressions: `legacy_quote_keeps_unknown_observation_time_without_computed_storage_fields`, `failed_provider_without_a_quote_has_independent_health`, `response_contract_retains_legacy_keys_and_exposes_freshness_separately`, and `enum_wire_values_are_stable`. They check nullability, persisted-versus-computed fields, independent health with required failure details, compatibility field names, numeric retained prices, coverage JSON, and enum spellings. These verify model serialization, not runtime freshness computation, which remains P3.5/P3.6.
 - Final gates in an ephemeral Podman container using `localhost/bitcoin-price-tracker-audit:local`, Rust 1.85.1, and current workspace sources: `cargo fmt --all -- --check`, `cargo clippy --locked --release --all-targets -- -D warnings`, and `cargo test --locked --release` passed: **54 passed, 0 failed, 1 ignored**. `git diff --check` passed. Existing route tests still pass with the current API. No dependency/schema changes; Selenium and deployment checks were not run. Changes remain uncommitted. P3.2 is next for the atomic schema migration.
