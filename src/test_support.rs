@@ -198,6 +198,7 @@ impl MockUpstreams {
             coinbase: format!("{}/coinbase", self.base_url),
             kraken: format!("{}/kraken", self.base_url),
             gemini: format!("{}/gemini", self.base_url),
+            news: format!("{}/news", self.base_url),
         }
     }
 }

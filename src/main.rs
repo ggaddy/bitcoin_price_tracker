@@ -77,3 +77,6 @@ mod api_tests;
 
 #[cfg(test)]
 mod operations_tests;
+
+#[cfg(test)]
+mod load_fixture;
