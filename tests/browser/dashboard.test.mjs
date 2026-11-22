@@ -231,15 +231,69 @@ test('registration renders its cached price without an initial price GET and kee
 });
 
 test('cold startup registration retries prices promptly while keeping viewer admission successful', async t => {
-  const app = await setup(t, { presence: (route, body) => json(route, {
-    active_viewers: 1, ...(body.include_price ? { price: unavailableWithRefresh() } : {}),
-  }) });
+  let priceCalls = 0;
+  const app = await setup(t, {
+    presence: (route, body) => json(route, {
+      active_viewers: 1, ...(body.include_price ? { price: unavailableWithRefresh() } : {}),
+    }),
+    price: route => json(route, ++priceCalls === 1 ? unavailableWithRefresh() : report()),
+  });
   await text(app.page, 'status', 'UNAVAILABLE');
+  assert.equal(await app.page.locator('#avg').textContent(), 'Loading...');
+  assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), false);
   assert.equal(app.prices(), 0);
+  const firstRetry = app.page.waitForResponse(response => response.url().endsWith('/api/price'));
+  await tick(app.page, 1100);
+  await firstRetry;
+  assert.equal(app.prices(), 1);
+  assert.equal(await app.page.locator('#avg').textContent(), 'Loading...');
   await tick(app.page, 1100);
   await text(app.page, 'status', 'LIVE');
-  assert.equal(app.prices(), 1);
+  assert.match(await app.page.locator('#avg').textContent(), /100\u2009150\.00/);
+  assert.equal(app.prices(), 2);
   assert.equal(await app.page.locator('#warnings').textContent(), 'None');
+});
+
+test('waking from idle shows dimmed last stored average while refreshing and swaps smoothly to live', async t => {
+  const stale = report({
+    status: 'STALE', stale: true, refreshing: true, average_price: null, spread: null,
+    coverage: { configured_source_count: 4, fresh_source_count: 0, contributing_sources: [] },
+  });
+  stale.sources.forEach(source => { source.age_seconds = 300; source.freshness = 'stale'; source.last_success_at_unix = now - 300; });
+  // Include an unrecognized legacy quote that must not affect the stored average.
+  stale.sources.push({ source: 'LegacyExchange', price_usd: 999999, last_success_at_unix: now - 300, quote_kind: 'unknown', age_seconds: 300, freshness: 'stale' });
+  let priceCalls = 0;
+  const app = await setup(t, {
+    presence: (route, body) => json(route, {
+      active_viewers: 1, ...(body.include_price ? { price: stale } : {}),
+    }),
+    price: route => json(route, ++priceCalls === 1 ? stale : report()),
+  });
+  await text(app.page, 'status', 'STALE');
+  assert.match(await app.page.locator('#avg').textContent(), /100\u2009150\.00/);
+  assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), true);
+  assert.equal(await app.page.locator('#spread').textContent(), '-');
+  await text(app.page, 'coverage', '0 of 4 sources fresh');
+  await text(app.page, 'coverage', 'while updating');
+  assert.equal(app.prices(), 0);
+  const firstRetry = app.page.waitForResponse(response => response.url().endsWith('/api/price'));
+  await tick(app.page, 1100);
+  await firstRetry;
+  assert.equal(app.prices(), 1);
+  assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), true);
+  await tick(app.page, 1100);
+  await text(app.page, 'status', 'LIVE');
+  assert.match(await app.page.locator('#avg').textContent(), /100\u2009150\.00/);
+  assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), false);
+  assert.match(await app.page.locator('#spread').textContent(), /300\.00/);
+  assert.equal(app.prices(), 2);
+});
+
+test('empty database without active refresh still reports Unavailable', async t => {
+  const { page } = await setup(t, { price: route => json(route, unavailable(), 503) });
+  await text(page, 'status', 'UNAVAILABLE');
+  assert.equal(await page.locator('#avg').textContent(), 'Unavailable');
+  assert.equal(await page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), false);
 });
 
 function unavailableWithRefresh() { return { ...unavailable(), refreshing: true }; }
@@ -308,7 +362,10 @@ test('freshness expires between responses without upgrading unknown or future qu
   await tick(page, 1100);
   await text(page, 'status', 'STALE');
   await text(page, 'coverage', '0 of 4');
-  await text(page, 'avg', 'Unavailable');
+  // Only the two stale configured-provider quotes (100000 and 100100) feed the dimmed fallback; unknown/future stay excluded.
+  assert.match(await page.locator('#avg').textContent(), /100\u2009050\.00/);
+  assert.equal(await page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), true);
+  assert.equal(await page.locator('#spread').textContent(), '-');
   assert.deepEqual(await page.locator('#sources .source-detail').allTextContents(), ['90s', '90s', 'Age unknown', 'Age unknown']);
 });
 
@@ -349,10 +406,13 @@ for (const kind of ['startup', 'price', 'retry']) {
     await text(app.page, 'warnings', 'Delayed evaluated report');
     await text(app.page, 'sources', 'Coinbase');
     assert.equal(await app.page.locator('#status').textContent(), 'STALE');
-    assert.equal(await app.page.locator('#avg').textContent(), 'Unavailable');
+    assert.match(await app.page.locator('#avg').textContent(), /100\u2009150\.00/);
+    assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), true);
+    assert.equal(await app.page.locator('#spread').textContent(), '-');
     await text(app.page, 'coverage', '0 of 4');
     await tick(app.page, 5100);
     await text(app.page, 'status', 'LIVE');
+    assert.equal(await app.page.locator('#avg').evaluate(el => el.classList.contains('hero-price--stale')), false);
     assert.equal(app.maxPrices(), 1);
     assert.equal(app.maxPresence(), 1);
   });

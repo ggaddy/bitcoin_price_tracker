@@ -70,6 +70,7 @@
     if (!lastData) {
       status(priceError ? "OFFLINE" : presenceError ? "DEGRADED" : "Connecting");
       if (priceError) el.avg.textContent = "Unavailable";
+      el.avg.classList.remove("hero-price--stale");
       el.note.textContent = warnings.length ? "Connection interrupted. Retrying automatically." : "Connecting to the price feed.";
     } else {
       const data = lastData;
@@ -96,15 +97,40 @@
       status(label);
       let mean = null;
       contributors.forEach((source, index) => { mean = index ? mean + (source.price_usd - mean) / (index + 1) : source.price_usd; });
-      el.avg.textContent = mean === null ? "Unavailable" : priceText(mean);
+      // When no fresh quotes qualify, compute a dimmed last-stored indicative
+      // average from retained stale configured-provider quotes only (never
+      // unknown/future or unrecognized legacy rows) so waking from idle avoids
+      // flashing "Unavailable" while keeping the freshness state explicit.
+      const configured = data.provider_health.map(health => health.source);
+      const retained = count ? [] : configured.map(name => sources
+        .filter(source => source.source === name && source.currentFreshness === "stale")
+        .sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity))[0]).filter(Boolean);
+      let retainedMean = null;
+      retained.forEach((source, index) => { retainedMean = index ? retainedMean + (source.price_usd - retainedMean) / (index + 1) : source.price_usd; });
+      const showingRetained = mean === null && retainedMean !== null;
+      const waitingInitial = mean === null && retainedMean === null && data.refreshing === true && !priceError;
+      el.avg.textContent = mean !== null ? priceText(mean)
+        : showingRetained ? priceText(retainedMean)
+        : waitingInitial ? "Loading..."
+        : "Unavailable";
+      el.avg.classList.toggle("hero-price--stale", showingRetained);
       el.spread.textContent = count ? priceText(Math.max(...contributors.map(s => s.price_usd)) - Math.min(...contributors.map(s => s.price_usd))) : "-";
-      el.coverage.textContent = `${count} of ${data.coverage.configured_source_count} sources contribute · Fresh for less than ${data.source_max_age_seconds}s`;
+      el.coverage.textContent = count
+        ? `${count} of ${data.coverage.configured_source_count} sources contribute · Fresh for less than ${data.source_max_age_seconds}s`
+        : showingRetained
+          ? `0 of ${data.coverage.configured_source_count} sources fresh · ${data.refreshing === true ? "Showing last stored average while updating…" : "Last stored average (stale)"}`
+          : `0 of ${data.coverage.configured_source_count} sources contribute · Fresh for less than ${data.source_max_age_seconds}s`;
       el.viewers.textContent = String(data.active_viewers ?? 0);
       const times = sources.map(source => source.last_success_at_unix).filter(time => Number.isFinite(time) && time <= data.evaluated_at_unix);
       el.updated.textContent = times.length ? new Date(Math.max(...times) * 1000).toLocaleString() : "Unknown";
       el.note.textContent = priceError
         ? `Connection interrupted. Retaining last received quotes; report received ${elapsed}s ago. Retrying automatically.`
         : presenceError ? "Viewer heartbeat failed. Displaying available quotes while retrying."
+        : showingRetained
+          ? (data.refreshing === true
+            ? "Refreshing latest quotes. Showing last stored average and quotes until fresh quotes arrive."
+            : "No fresh quotes qualify for the live average. Showing last stored average and quotes with their ages.")
+        : waitingInitial ? "Fetching initial quotes from providers…"
         : !count ? "No fresh quotes qualify for the average. Retained quotes are shown with their ages."
         : `Showing ${count} contributing sources. Ages include request time and advance between updates.`;
       el.sources.replaceChildren();
@@ -206,7 +232,10 @@
       worker.busy = false;
       if (running) {
         render();
-        worker.timer = setTimeout(() => poll(kind), owner === generation ? 5000 : 0);
+        const nextDelay = owner !== generation ? 0
+          : kind === "price" && !priceError && lastData?.refreshing === true && lastData.coverage.fresh_source_count === 0 ? 1000
+          : 5000;
+        worker.timer = setTimeout(() => poll(kind), nextDelay);
       }
     }
     return startupPriceDelay;
