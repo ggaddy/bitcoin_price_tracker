@@ -225,8 +225,14 @@ and failed cold starts return 503 with independent health; unreadable storage
 returns 500 without exposing internal details.
 The dashboard displays per-source metadata, health, and aggregate coverage.
 It advances reported ages with monotonic elapsed time, removes expired quotes
-from displayed aggregates, and can downgrade LIVE locally. Only a new server
-response can make an unknown, future, or stale observation fresh. Transport
-failures retain quote cards with an OFFLINE warning; failed heartbeats degrade
-an otherwise LIVE display. Last price update uses the latest nonfuture source
-observation time, rather than snapshot persistence time.
+from live aggregates and spread, and can downgrade LIVE locally. When no fresh
+quotes qualify, the API still returns null `average_price`/`spread` while the
+dashboard displays a dimmed last-stored indicative average of retained stale
+configured-provider quotes (excluding `unknown`, `future`, and unrecognized
+legacy rows) labeled stale/updating, or `Loading...` while an empty database is
+refreshing, falling back to `Unavailable` only when no retained stale quotes
+exist and no refresh is in progress. Only a new server response can make an
+unknown, future, or stale observation fresh. Transport failures retain quote
+cards with an OFFLINE warning; failed heartbeats degrade an otherwise LIVE
+display. Last price update uses the latest nonfuture source observation time,
+rather than snapshot persistence time.
