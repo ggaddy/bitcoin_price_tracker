@@ -2,7 +2,7 @@
 name = "bitcoin_price_tracker"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 
 [dependencies]
 axum = "0.8.9"

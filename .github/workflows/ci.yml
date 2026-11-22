@@ -21,7 +21,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: docker.io/library/rust:1.99.1-bookworm
+    container: docker.io/library/rust:1.100.0-bookworm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain
@@ -29,7 +29,7 @@ jobs:
         uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
         with:
           version: '2.0.0'
-          cache-key-prefix: kache-rust-1.99.1
+          cache-key-prefix: kache-rust-1.100.0
           cache-executables: true
           max-size: 2GiB
           pr-comment: false
@@ -50,21 +50,21 @@ jobs:
   advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: docker.io/library/rust:1.99.1-bookworm
+    container: docker.io/library/rust:1.100.0-bookworm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustc +1.99.1 --version
+      - run: rustc +1.100.0 --version
       - name: Set up Kache
         uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
         with:
           version: '2.0.0'
-          cache-key-prefix: kache-audit-1.99.1
+          cache-key-prefix: kache-audit-1.100.0
           cache-executables: true
           max-size: 2GiB
           pr-comment: false
       - name: Install pinned RustSec scanner
-        run: cargo +1.99.1 install cargo-audit --locked --version 0.23.0
-      - run: cargo +1.99.1 audit --deny warnings
+        run: cargo +1.100.0 install cargo-audit --locked --version 0.23.0
+      - run: cargo +1.100.0 audit --deny warnings
   npm-advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 20
