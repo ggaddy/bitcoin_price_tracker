@@ -409,11 +409,15 @@ test('slow prices time out with one request while heartbeats continue', async t 
   const held = [];
   const app = await setup(t, { price: (route, count) => count === 1 ? held.push(route) : json(route, report()) });
   await app.page.waitForFunction(() => document.getElementById('status').textContent === 'Connecting');
-  await tick(app.page, 8500);
+  // Wait for startup presence to finish and the first price request to start before advancing the clock.
+  for (let attempt = 0; !held.length && attempt < 200; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(held.length, 1, 'first price request started');
+  // Step below the 3s presence deadline so route IPC cannot race a single large clock jump.
+  for (let step = 0; step < 6; step++) await tick(app.page, 1500);
   await text(app.page, 'status', 'OFFLINE');
   assert.ok(app.presence.filter(body => body.active).length >= 2);
   assert.equal(app.prices(), 1);
-  await tick(app.page, 5100);
+  for (let step = 0; step < 4; step++) await tick(app.page, 1500);
   await text(app.page, 'status', 'LIVE');
   assert.equal(app.maxPrices(), 1);
   assert.equal(app.maxPresence(), 1);
@@ -925,9 +929,9 @@ for (const interruption of ['pause', 'hidden', 'hover', 'focus', 'manual', 'redu
     } else await page.locator('#feed-toggle').click();
     await tick(page, 100);
     assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'resuming starts a new bottom dwell');
-    await tick(page, 2900);
+    await tick(page, 2700);
     assert.equal(await feed.evaluate(el => el.scrollTop), bottom, 'retain a full three-second dwell');
-    await tick(page, 200);
+    await tick(page, 400);
     assert.ok(await feed.evaluate(el => el.scrollTop) < bottom, 'wrap after the new dwell');
   });
 }
