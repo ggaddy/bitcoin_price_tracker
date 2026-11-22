@@ -2,8 +2,8 @@
 
 The original request is preserved below as product history. These requirements
 are not an active task list or a description of outstanding work. The implemented
-application is documented in [README.md](README.md) and
-[docs/source-contract.md](docs/source-contract.md); current tasks and blockers
+application is documented in [README.md](../../README.md) and
+[docs/source-contract.md](../source-contract.md); current tasks and blockers
 live in Beads (`bd ready`, `bd show <id>`).
 
 ---

@@ -2,14 +2,16 @@
 
 The price response types are defined in
 [`src/models.rs`](../src/models.rs); presence
-types are in [`src/presence.rs`](../src/presence.rs), with HTTP behavior in
-[`src/handlers.rs`](../src/handlers.rs).
+types are in [`src/presence.rs`](../src/presence.rs), with HTTP routing and
+behavior in [`src/handlers.rs`](../src/handlers.rs), [`src/news.rs`](../src/news.rs),
+and [`src/ui.rs`](../src/ui.rs).
 SQLite schema version 1 stores observations and provider health atomically.
 Responses evaluate per-source freshness, status, coverage, and aggregates at
 request time in [`src/freshness.rs`](../src/freshness.rs); persisted snapshot
 summaries are not reused. Serialization and route tests verify the wire format
 and runtime behavior. This is the current reference; historical P1–P3 phase
-names and implementation evidence are in [the archived audit](../AUDIT.md).
+names and implementation evidence are in
+[the archived audit](archive/audit-history.md).
 
 ## Schema migration
 
@@ -165,7 +167,8 @@ warning; it cannot claim that the database has never held quotes. In that error
 response use empty source/health arrays and zero fresh coverage, because the
 persisted records could not be read. Request middleware can instead return
 429 (rate limit), 503 (concurrency limit), or 408 (deadline) with a safe `error`
-object rather than the price response shape; see [request limits](../README.md#configuration-and-limits).
+object rather than the price response shape; see
+[request limits](operations.md#configuration-and-limits).
 
 `fetched_at_unix` is the snapshot persistence time (0 without a snapshot).
 `fetched_age_seconds` is its nonnegative age at evaluation, or null without a
@@ -209,6 +212,23 @@ Admitted startup reads and ordinary price reads share refresh ownership,
 the ten-second gates and provider cooldowns. Dispatched price work survives
 client cancellation. Shutdown prevents new dispatch and drains in-progress
 price work through its commit within the same configured HTTP shutdown budget.
+
+## Other HTTP routes
+
+- **`GET /api/news`** ([`src/news.rs`](../src/news.rs)): Serves an in-memory
+  Bitcoin.com RSS cache (`{"xml": "<rss...>" | null, "stale": bool, "refreshing": bool}`).
+  Returns HTTP `200` when cached XML is present (including stale cache) or `503`
+  when empty; adds `Retry-After: 2` whenever a single background refresh
+  (12-second timeout, 2 MiB body cap, 5-minute refresh/failure interval) is in
+  flight.
+- **`GET /health`** ([`src/handlers.rs`](../src/handlers.rs)): Verifies SQLite
+  readability without activating viewers, calling upstream providers, or
+  creating a missing database. Returns `200` `{"status": "ok"}` or `503`
+  `{"status": "unavailable"}`.
+- **`GET /`, `GET /assets/dashboard.css`, `GET /assets/dashboard.js`**
+  ([`src/ui.rs`](../src/ui.rs)): Serve embedded dashboard assets with
+  `Cache-Control: no-cache` and security headers; CSS and JS emit content-derived
+  weak ETags (`W/"..."`) and honor `If-None-Match` with `304 Not Modified`.
 
 ## Integration checks
 

@@ -3,8 +3,8 @@
 This is an archived report of the September 2026 review and v2.7.0 remediation.
 Findings, validation counts, deployment observations, and review deadlines below
 are historical evidence. They do not establish current scan results, current
-GitHub/edge settings, or the deployed image. Follow [SECURITY.md](SECURITY.md) and
-[.grype.yaml](.grype.yaml) for the checked-in advisory policy and enforced deadline;
+GitHub/edge settings, or the deployed image. Follow [SECURITY.md](../../SECURITY.md) and
+[.grype.yaml](../../.grype.yaml) for the checked-in advisory policy and enforced deadline;
 current follow-up work lives in Beads (`bd ready`).
 
 The September 2026 audit reviewed application commit
@@ -35,7 +35,7 @@ AUD-03 and AUD-04 require a faulty or compromised upstream; public clients canno
 supply provider URLs. AUD-05 was reproduced against a disposable direct origin,
 not through a production public proxy. AUD-06 requires release/repository access.
 The audit did not demonstrate exploitation of a runtime OS advisory through the
-application. See [SECURITY.md](SECURITY.md) for advisory applicability and expiry.
+application. See [SECURITY.md](../../SECURITY.md) for advisory applicability and expiry.
 
 ## Validation
 
