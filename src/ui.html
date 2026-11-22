@@ -3,80 +3,88 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0d0e14" />
+    <meta name="theme-color" content="#07090e" />
     <title>BTC Tracker</title>
-    <link rel="stylesheet" href="/assets/cybercore-0.3.0.min.css" />
-    <link rel="stylesheet" href="/assets/dashboard.css?v=2.9.4" />
+    <link rel="stylesheet" href="/assets/dashboard.css?v=2.10.0" />
   </head>
   <body>
     <main>
       <header class="masthead">
         <div class="brand">
           <span class="bitcoin-mark" aria-hidden="true">₿</span>
-          <div><h1 class="title cyber-glitch" data-text="BITCOIN TRACKER">BITCOIN TRACKER</h1><p class="sub">decentralized money</p></div>
+          <div>
+            <h1 class="title">BITCOIN TRACKER</h1>
+            <p class="sub">decentralized money</p>
+          </div>
         </div>
-        <a class="cyber-btn cyber-btn--sm" href="#provider-quotes">View sources <span aria-hidden="true">↗</span></a>
       </header>
 
       <div class="dashboard">
-        <div class="card-shadow">
-          <section class="cyber-card hero" aria-labelledby="average-heading">
-            <div class="hero-heading">
-              <h2 class="label" id="average-heading">BTC/USD</h2>
-              <span id="status" role="status" aria-live="polite" aria-atomic="true">Connecting</span>
-            </div>
-            <p class="hero-price cyber-glitch" id="avg" data-text="Loading...">Loading...</p>
-            <p class="hero-caption" id="coverage">Waiting for source coverage…</p>
-            <p class="hero-caption">USD per bitcoin · Mix of spot, bid, last-trade and aggregate quotes</p>
-            <div class="hero-bottom"><span class="label">Provider spread</span><span class="value" id="spread">-</span></div>
-          </section>
+        <section class="panel hero" aria-labelledby="average-heading">
+          <div class="hero-heading">
+            <h2 class="label" id="average-heading">BTC / USD</h2>
+            <span class="status-pill" id="status" role="status" aria-live="polite" aria-atomic="true">Connecting</span>
+          </div>
+          <p class="hero-price" id="avg">Loading...</p>
+          <p class="hero-caption" id="coverage">Waiting for source coverage…</p>
+          <p class="hero-caption hero-caption--muted">USD per bitcoin · Mix of spot, bid, last-trade and aggregate quotes</p>
+          <div class="hero-bottom">
+            <span class="label">Provider spread</span>
+            <span class="value" id="spread">-</span>
+          </div>
+        </section>
 
-        </div>
-
-        <div class="card-shadow">
-        <section class="cyber-card cyber-card--yellow session" aria-labelledby="session-heading">
-          <div class="cyber-card__header"><h2 class="cyber-card__title" id="session-heading">Feed activity</h2></div>
-          <dl>
+        <section class="panel session" aria-labelledby="session-heading">
+          <div class="panel-header">
+            <h2 class="panel-title" id="session-heading">Feed activity</h2>
+          </div>
+          <dl class="metrics">
             <div><dt class="label">Last price update</dt><dd class="value" id="updated">-</dd></div>
             <div><dt class="label">Active viewers</dt><dd class="value" id="viewers">0</dd></div>
           </dl>
-          <div class="news-heading">
-            <span class="label">Bitcoin.com RSS</span>
-            <button type="button" class="cyber-btn cyber-btn--sm feed-toggle" id="feed-toggle" aria-pressed="false">Pause scrolling</button>
-          </div>
-          <p class="label" id="feed-status" role="status">Loading Bitcoin.com RSS…</p>
-          <div class="feed-window" id="feed-window" tabindex="0" role="region" aria-label="Bitcoin news headlines">
-            <ul class="feed-list" id="feed-list"></ul>
+          <div class="news-block">
+            <div class="news-heading">
+              <span class="label">Bitcoin.com RSS</span>
+              <button type="button" class="btn btn--sm feed-toggle" id="feed-toggle" aria-pressed="false">Pause scrolling</button>
+            </div>
+            <p class="feed-status" id="feed-status" role="status">Loading Bitcoin.com RSS…</p>
+            <div class="feed-window" id="feed-window" tabindex="0" role="region" aria-label="Bitcoin news headlines">
+              <ul class="feed-list" id="feed-list"></ul>
+            </div>
           </div>
         </section>
-        </div>
       </div>
 
-      <section id="provider-quotes" aria-labelledby="sources-heading">
+      <section id="provider-quotes" class="quotes-section" aria-labelledby="sources-heading">
         <div class="section-heading">
-          <h2 id="sources-heading">MARKET QUOTES</h2>
+          <h2 id="sources-heading"><span class="section-number" aria-hidden="true">01 //</span>MARKET QUOTES</h2>
           <p>Latest stored quotes · Individual prices may update at different times</p>
         </div>
         <div class="sources-grid" id="sources"><p class="empty-state">Waiting for provider quotes…</p></div>
       </section>
 
-      <section class="cyber-terminal feed-terminal" aria-labelledby="feed-heading">
-        <div class="cyber-terminal__header">
-          <span class="cyber-terminal__dot cyber-terminal__dot--red" aria-hidden="true"></span>
-          <span class="cyber-terminal__dot cyber-terminal__dot--yellow" aria-hidden="true"></span>
-          <span class="cyber-terminal__dot cyber-terminal__dot--green" aria-hidden="true"></span>
-          <h2 class="cyber-terminal__title" id="feed-heading">02 / FEED REPORT</h2>
+      <section class="terminal feed-terminal" aria-labelledby="feed-heading">
+        <div class="terminal-header">
+          <span class="terminal-dot terminal-dot--red" aria-hidden="true"></span>
+          <span class="terminal-dot terminal-dot--amber" aria-hidden="true"></span>
+          <span class="terminal-dot terminal-dot--green" aria-hidden="true"></span>
+          <h2 class="terminal-title" id="feed-heading">02 // FEED REPORT</h2>
         </div>
-        <div class="cyber-terminal__body">
-          <p><span class="terminal-label" aria-hidden="true">&gt;</span><span id="note">Connecting to the price feed. Updates run while this tab is visible.</span></p>
+        <div class="terminal-body">
+          <p class="terminal-line"><span class="terminal-label" aria-hidden="true">&gt;</span><span id="note">Connecting to the price feed. Updates run while this tab is visible.</span></p>
           <h3 class="warning-heading">Warnings</h3>
           <ul class="warnings" id="warnings"><li>Waiting for the first report…</li></ul>
         </div>
       </section>
-      <noscript><p class="cyber-alert">Enable JavaScript to load prices and keep this dashboard updated.</p></noscript>
-      <footer class="footer"><span>BTC / USD</span><span>Interface powered by <a href="https://github.com/sebyx07/cybercore-css/">CYBERCORE CSS</a></span></footer>
+
+      <noscript><p class="alert">Enable JavaScript to load prices and keep this dashboard updated.</p></noscript>
+
+      <footer class="footer">
+        <span>BTC / USD</span>
+        <span>Zero-dependency dark telemetry interface</span>
+      </footer>
     </main>
 
-    <script src="/assets/dashboard.js?v=2.9.4" defer></script>
+    <script src="/assets/dashboard.js?v=2.10.0" defer></script>
   </body>
 </html>

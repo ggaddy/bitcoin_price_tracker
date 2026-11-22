@@ -19,10 +19,6 @@ pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
-        .route(
-            "/assets/cybercore-0.3.0.min.css",
-            get(crate::ui::cybercore_css),
-        )
         .route("/assets/dashboard.js", get(crate::ui::dashboard_js))
         .route("/assets/dashboard.css", get(crate::ui::dashboard_css))
         .route("/api/price", get(btc_prices))

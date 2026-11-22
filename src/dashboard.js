@@ -139,7 +139,7 @@
         const source = sources.filter(source => source.source === name).sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity))[0];
         const health = data.provider_health.find(health => health.source === name)?.last_attempt;
         const article = node("article", "source-card", "");
-        const surface = node("div", "cyber-card source-card__surface", "");
+        const surface = node("div", "panel source-card__surface", "");
         surface.append(node("h3", "label", name), node("p", "value", source ? priceText(source.price_usd) : "No quote"));
         surface.append(node("p", "source-unit", source ? `USD / BTC · ${String(source.quote_kind ?? "unknown").replace(/_/g, " ")}` : "Waiting for a successful quote"));
         surface.append(node("p", "source-detail", source
@@ -152,7 +152,6 @@
       if (!names.length) el.sources.append(node("p", "empty-state", "No provider quotes available. Retrying automatically."));
       warnings.push(...data.warnings.map(String));
     }
-    el.avg.dataset.text = el.avg.textContent;
     // Avoid repeated live-region announcements; only the badge is live.
     el.warnings.replaceChildren(...(warnings.length ? warnings : ["None"]).map(text => node("li", "", text)));
   }
@@ -307,7 +306,6 @@
   } catch {
     status("UNSUPPORTED");
     el.avg.textContent = "Unavailable";
-    el.avg.dataset.text = "Unavailable";
     el.note.textContent = "This browser cannot safely track a viewer session. Use a browser with secure random IDs, fetch, and AbortController support.";
   }
 })();

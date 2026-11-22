@@ -566,11 +566,7 @@ async fn embedded_assets_revalidate_get_and_head_without_losing_security_headers
     let app = TestApp::new().await;
     let router = crate::handlers::router(app.state.clone());
     let mut tags = Vec::new();
-    for path in [
-        "/assets/dashboard.js",
-        "/assets/dashboard.css",
-        "/assets/cybercore-0.3.0.min.css",
-    ] {
+    for path in ["/assets/dashboard.js", "/assets/dashboard.css"] {
         let request = |method, tag: Option<&str>| {
             let mut request = axum::http::Request::builder().method(method).uri(path);
             if let Some(tag) = tag {
