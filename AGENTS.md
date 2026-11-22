@@ -22,10 +22,15 @@ Cross-machine sync uses `bd dolt push/pull` and `refs/dolt/data` on the git remo
 separate from code branches under `refs/heads/*`. Use `bd where` to locate the
 active workspace. See the [Beads sync concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md).
 
-The active profile is **conservative**: do not create git commits, push code, or
-run Dolt remote sync without explicit user authorization. Tool approval settings
-do not change this project policy. Beads guidance is subordinate to the current
-user, repository, and orchestrator instructions.
+The active profile is **team-maintainer**: after completing authorized work and
+passing appropriate checks, automatically commit the task's changes, push the
+code branch to its configured Git remote, and sync Beads with `bd dolt pull` and
+`bd dolt push`. No separate confirmation is needed for these routine steps.
+Review incoming changes before integrating them, preserve unrelated work, and
+use an isolated worktree when a dirty or divergent checkout needs integration.
+Do not force-push, discard work, or rewrite shared history. Report exact commands
+and errors for blocked steps. Current user and orchestrator instructions override
+this policy; tool approval settings remain independent of repository authority.
 
 ## Build and validation
 
@@ -105,9 +110,12 @@ Before reporting completion:
 1. Record remaining work/blockers in Beads and close only completed issues.
 2. Run checks appropriate to the changes and report their results/limits.
 3. Run `git status` and review the diff for unintended changes.
-4. Follow the conservative profile: leave commits, code pushes, and Dolt remote
-   sync for explicit authorization. Report changed files and suggested next steps.
+4. Follow the team-maintainer profile: integrate incoming changes safely, commit
+   task changes, push the code branch, and pull/push Beads Dolt data. Verify the
+   resulting Git and Beads status; report commits, remote branches, and any
+   incomplete or blocked step.
 
-Do not stop completed, authorized local work merely because a later commit or
-publish step would need authorization. If an explicitly required sync/push fails,
-report the exact command and error rather than claiming it succeeded.
+Do not stop completed, authorized local work merely because a later release or
+deployment step would need authorization. Automatic code pushes do not authorize
+release tags, image publication, or production deployments. If a required
+sync/push fails, report the exact command and error rather than claiming success.
