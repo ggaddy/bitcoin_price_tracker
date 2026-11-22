@@ -177,8 +177,9 @@ abuse controls at your reverse proxy.
 
 At 1,000 tabs, five-second polling nominally needs about 200 requests/second in
 each of the price and presence groups; 250/second leaves 25% rate headroom.
-This is arithmetic, not measured sustainable capacity. Beads issue
-`bitcoin_price_tracker-4mr` tracks load testing. Shared origin budgets alone do
+This arithmetic alone does not establish sustainable capacity. See
+[local load testing and measured operating limits](docs/load-testing.md) for the
+disposable fixture harness and recorded results. Shared origin budgets alone do
 not guarantee client fairness.
 
 Info logs report provider outcome/duration and startup/shutdown; debug logs add

@@ -31,6 +31,7 @@ pub(crate) struct UpstreamEndpoints {
     pub(crate) coinbase: String,
     pub(crate) kraken: String,
     pub(crate) gemini: String,
+    pub(crate) news: String,
 }
 
 impl Default for UpstreamEndpoints {
@@ -42,6 +43,7 @@ impl Default for UpstreamEndpoints {
             coinbase: "https://api.coinbase.com/v2/prices/BTC-USD/spot".to_string(),
             kraken: "https://api.kraken.com/0/public/Ticker?pair=XBTUSD".to_string(),
             gemini: "https://api.gemini.com/v2/ticker/btcusd".to_string(),
+            news: "https://news.bitcoin.com/feed/".to_string(),
         }
     }
 }

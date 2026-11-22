@@ -12,7 +12,6 @@ use serde::Serialize;
 
 use crate::state::AppState;
 
-const FEED_URL: &str = "https://news.bitcoin.com/feed/";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const MAX_FEED_BYTES: usize = 2 * 1024 * 1024;
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(12);
@@ -32,9 +31,9 @@ pub(crate) struct FeedResponse {
     refreshing: bool,
 }
 
-async fn fetch_feed(client: &reqwest::Client) -> Result<String, String> {
+async fn fetch_feed(client: &reqwest::Client, endpoint: &str) -> Result<String, String> {
     let mut response = client
-        .get(FEED_URL)
+        .get(endpoint)
         .timeout(REFRESH_TIMEOUT)
         .send()
         .await
@@ -58,7 +57,12 @@ pub(crate) async fn bitcoin_news(
     State(state): State<AppState>,
 ) -> (StatusCode, HeaderMap, Json<FeedResponse>) {
     let client = state.client.clone();
-    news_response(&state, async move { fetch_feed(&client).await }).await
+    let endpoints = state.endpoints.clone();
+    news_response(
+        &state,
+        async move { fetch_feed(&client, &endpoints.news).await },
+    )
+    .await
 }
 
 async fn news_response(
