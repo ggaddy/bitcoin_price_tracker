@@ -72,16 +72,6 @@ pub(crate) async fn dashboard_css(headers: axum::http::HeaderMap) -> axum::respo
     )
 }
 
-pub(crate) async fn cybercore_css(headers: axum::http::HeaderMap) -> axum::response::Response {
-    static ETAG: std::sync::OnceLock<axum::http::HeaderValue> = std::sync::OnceLock::new();
-    embedded_asset(
-        headers,
-        include_str!("vendor/cybercore-0.3.0.min.css"),
-        "text/css; charset=utf-8",
-        &ETAG,
-    )
-}
-
 pub(crate) async fn dashboard_js(headers: axum::http::HeaderMap) -> axum::response::Response {
     static ETAG: std::sync::OnceLock<axum::http::HeaderValue> = std::sync::OnceLock::new();
     embedded_asset(

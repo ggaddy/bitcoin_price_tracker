@@ -1,10 +1,9 @@
 # Bitcoin Price Tracker
 
-A Rust/Axum BTC/USD tracker with a Cybercore dashboard, four price providers,
-local SQLite persistence, and a non-root container image. Dashboard assets are
-embedded in the binary; there is no frontend build step or runtime CDN dependency.
-[Cybercore CSS](https://github.com/sebyx07/cybercore-css/) 0.3.0 and its MIT license
-are vendored in `src/vendor`.
+A Rust/Axum BTC/USD tracker with a lightweight dark-only dashboard, four price
+providers, local SQLite persistence, and a non-root container image. Dashboard
+assets are embedded in the binary with zero external CSS frameworks, frontend
+build steps, or runtime CDN dependencies.
 
 ## Quick start
 

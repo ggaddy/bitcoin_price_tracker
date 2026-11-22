@@ -30,7 +30,6 @@ before(async () => {
     ['/', '../../src/ui.html', 'text/html'],
     ['/assets/dashboard.js', '../../src/dashboard.js', 'text/javascript'],
     ['/assets/dashboard.css', '../../src/dashboard.css', 'text/css'],
-    ['/assets/cybercore-0.3.0.min.css', '../../src/vendor/cybercore-0.3.0.min.css', 'text/css'],
   ].map(async ([path, file, type]) => [path, { body: await readFile(new URL(file, import.meta.url)), type }])));
   const ui = await readFile(new URL('../../src/ui.rs', import.meta.url), 'utf8');
   const policy = ui.match(/"(default-src [^"]+)"/)[1];
@@ -122,7 +121,6 @@ async function streamingFixture(t, path, status) {
     ['/', '../../src/ui.html', 'text/html'],
     ['/assets/dashboard.js', '../../src/dashboard.js', 'text/javascript'],
     ['/assets/dashboard.css', '../../src/dashboard.css', 'text/css'],
-    ['/assets/cybercore-0.3.0.min.css', '../../src/vendor/cybercore-0.3.0.min.css', 'text/css'],
   ].map(async ([path, file, type]) => [path, { body: await readFile(new URL(file, import.meta.url)), type }])));
   const ui = await readFile(new URL('../../src/ui.rs', import.meta.url), 'utf8');
   const policy = ui.match(/"(default-src [^"]+)"/)[1];
@@ -609,11 +607,12 @@ test('missing secure randomness produces explicit unsupported state without requ
 test('reduced motion responds to preference changes and hidden pages pause effects', async t => {
   const { page } = await setup(t, { reducedMotion: 'reduce' });
   await text(page, 'status', 'LIVE');
-  const animation = () => page.locator('h1').evaluate(el => getComputedStyle(el, '::before').animationName);
+  const animation = () => page.locator('#status').evaluate(el => getComputedStyle(el, '::before').animationName);
   assert.equal(await animation(), 'none');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
+  assert.equal(await animation(), 'status-pulse');
   await page.evaluate(() => window.changeVisibility(true));
-  assert.equal(await page.locator('h1').evaluate(el => getComputedStyle(el, '::before').animationPlayState), 'paused');
+  assert.equal(await page.locator('#status').evaluate(el => getComputedStyle(el, '::before').animationPlayState), 'paused');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.evaluate(() => window.changeVisibility(false));
   assert.equal(await animation(), 'none');
@@ -1000,7 +999,6 @@ test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
   const html = await readFile(new URL('../../src/ui.html', import.meta.url));
   const js = await readFile(new URL('../../src/dashboard.js', import.meta.url));
   const css = await readFile(new URL('../../src/dashboard.css', import.meta.url));
-  const vendor = await readFile(new URL('../../src/vendor/cybercore-0.3.0.min.css', import.meta.url));
   const fixture = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     let body, type = 'text/html', cache = 'no-cache';
@@ -1014,8 +1012,6 @@ test('a deployment bypasses legacy cached JavaScript and CSS', async t => {
       type = 'text/css';
       body = url.search && url.searchParams.get('v') !== '2.9.2' ? css : '.feed-window { height: 0px; }';
       cache = url.search && url.searchParams.get('v') !== '2.9.2' ? 'no-cache' : 'public, max-age=31536000';
-    } else if (url.pathname === '/assets/cybercore-0.3.0.min.css') {
-      type = 'text/css'; body = vendor;
     } else if (url.pathname.startsWith('/api/')) {
       type = 'application/json';
       body = JSON.stringify(url.pathname === '/api/news'
